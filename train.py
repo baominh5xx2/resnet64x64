@@ -370,24 +370,16 @@ def train(args):
     
     # Setup callbacks
     callbacks = [
-        ModelCheckpoint(
-            os.path.join(args.output_dir, 'model_best.keras'),
+        tf.keras.callbacks.EarlyStopping(
             monitor='val_loss',
-            save_best_only=True,
-            mode='min',
-            verbose=1
+            patience=15,
+            restore_best_weights=True
         ),
-        ReduceLROnPlateau(
+        tf.keras.callbacks.ReduceLROnPlateau(
             monitor='val_loss',
             factor=0.5,
             patience=5,
-            min_lr=1e-6,
-            verbose=1
-        ),
-        EarlyStopping(
-            monitor='val_loss',
-            patience=15,
-            verbose=1
+            min_lr=1e-6
         ),
         TensorBoard(
             log_dir=os.path.join(args.output_dir, 'logs'),

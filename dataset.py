@@ -3,6 +3,8 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.keras.utils import Sequence
 import cv2
+import math
+import tensorflow_addons as tfa
 
 class YOLODataset(Sequence):
     def __init__(self, dataset_path, img_size=64, grid_size=8, batch_size=16, augment=True, verbose=True):
@@ -148,6 +150,19 @@ class YOLODataset(Sequence):
             batch_y.append(y)
         
         return np.array(batch_x), np.array(batch_y)
+
+    def augment_image(self, image, label):
+        # Augment image
+        image = tf.image.random_brightness(image, 0.2)
+        image = tf.image.random_contrast(image, 0.8, 1.2)
+        image = tf.image.random_flip_left_right(image)
+        image = tf.image.random_saturation(image, 0.8, 1.2)
+        
+        # Random rotation
+        angle = tf.random.uniform([], -15, 15) * math.pi / 180
+        image = tfa.image.rotate(image, angle)
+        
+        return image, label
 
 class YOLODatasetFromPaths(Sequence):
     """YOLO dataset from text file with list of images (YOLOv5 format)"""
@@ -324,4 +339,4 @@ def get_data_loaders(data_path, img_size=64, grid_size=8, batch_size=16):
         augment=False
     )
     
-    return train_dataset, val_dataset, train_dataset.num_classes 
+    return train_dataset, val_dataset, train_dataset.num_classes

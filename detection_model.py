@@ -91,9 +91,11 @@ class ResNetYOLODetection:
                 print(f"Applied pooling: {x.shape}")
         
         # Detection head - predict bounding boxes, objectness and class probabilities
-        x = layers.Conv2D(512, kernel_size=3, padding='same', activation=self.activation)(x)
+        x = layers.Conv2D(512, kernel_size=3, padding='same', 
+                          kernel_regularizer=tf.keras.regularizers.l2(0.01),
+                          activation=self.activation)(x)
         x = layers.BatchNormalization()(x)
-        x = layers.Dropout(0.3)(x)  # Thêm dropout
+        x = layers.Dropout(0.5)(x)  # Tăng dropout rate
         
         raw_detection_output = layers.Conv2D(
             self.output_dims,
