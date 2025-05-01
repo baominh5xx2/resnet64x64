@@ -160,28 +160,32 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
         true_class = y_true[..., 5:]
         
         # Calculate coordinate loss (using mean squared error)
-        # Ensure true_xy and true_wh are correctly scaled if needed
         xy_loss = tf.reduce_sum(tf.square(true_xy - pred_xy) * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
-        # Using sqrt(wh) can sometimes be more stable, but MSE is standard too
-        wh_loss = tf.reduce_sum(tf.square(tf.sqrt(true_wh + 1e-6) - tf.sqrt(tf.abs(pred_wh) + 1e-6)) * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0) # Use sqrt for stability, abs for pred_wh
+        wh_loss = tf.reduce_sum(tf.square(tf.sqrt(true_wh + 1e-6) - tf.sqrt(tf.abs(pred_wh) + 1e-6)) * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
         
         # Calculate objectness loss (binary cross-entropy)
-        # Use tf.keras.losses.binary_crossentropy directly on probabilities
-        obj_loss = tf.keras.losses.binary_crossentropy(true_obj, pred_obj)
+        obj_loss_raw = tf.keras.losses.binary_crossentropy(true_obj, pred_obj)
         
-        # Penalize background predictions more (no_obj_loss)
-        no_obj_mask = 1.0 - true_obj
-        no_obj_loss = tf.keras.losses.binary_crossentropy(true_obj, pred_obj) * no_obj_mask
-        obj_loss = tf.reduce_sum(obj_loss * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0) # Loss for cells with objects
-        no_obj_loss = tf.reduce_sum(no_obj_loss) / tf.maximum(tf.reduce_sum(no_obj_mask), 1.0) # Loss for cells without objects
+        # Phần code được sửa chữa:
+        # Đảm bảo obj_loss_raw và true_obj có cùng kích thước
+        obj_loss = tf.reduce_sum(obj_loss_raw * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
         
-        # Calculate class loss (only where objects exist)
-        # Use reshape and broadcasting to ensure shape compatibility
-        class_loss_per_cell = tf.keras.losses.categorical_crossentropy(true_class, pred_class)  # (batch, grid, grid)
-        object_mask = tf.squeeze(true_obj, axis=-1)  # (batch, grid, grid)
-        class_loss = tf.reduce_sum(class_loss_per_cell * object_mask) / tf.maximum(tf.reduce_sum(object_mask), 1.0)
+        # Penalize background predictions more
+        no_obj_mask = 1.0 - true_obj  # Shape: [batch, grid, grid, 1]
+        no_obj_loss_raw = tf.keras.losses.binary_crossentropy(true_obj, pred_obj) * no_obj_mask
+        no_obj_loss = tf.reduce_sum(no_obj_loss_raw) / tf.maximum(tf.reduce_sum(no_obj_mask), 1.0)
         
-        # Total loss with weighting factors (adjust weights as needed)
+        # Sửa lỗi class loss - đảm bảo kích thước tương thích
+        # Tính categorical_crossentropy giữa true_class và pred_class
+        class_loss_per_cell = tf.keras.losses.categorical_crossentropy(true_class, pred_class)  # Shape: [batch, grid, grid]
+        
+        # Chuyển class_loss_per_cell thành [batch, grid, grid, 1] để nhân với true_obj
+        class_loss_per_cell = tf.expand_dims(class_loss_per_cell, axis=-1)  # Shape: [batch, grid, grid, 1]
+        
+        # Nhân trực tiếp với true_obj (không cần squeeze)
+        class_loss = tf.reduce_sum(class_loss_per_cell * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
+        
+        # Total loss with weighting factors
         lambda_coord = 5.0
         lambda_noobj = 0.5
         lambda_obj = 1.0
@@ -201,3 +205,4 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
     )
     
     return model
+``` 
