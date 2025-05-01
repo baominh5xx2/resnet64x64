@@ -155,7 +155,7 @@ class DetectionMetricsCallback(Callback):
                     objectness = cell_pred[4]
                     
                     # Bỏ qua nếu objectness thấp - TĂNG NGƯỠNG
-                    if objectness < 0.01:  # Tăng từ 0.00005 lên 0.01
+                    if objectness < 0.001:  # Tăng từ 0.00005 lên 0.01
                         continue
                     
                     # Lấy class
@@ -167,7 +167,7 @@ class DetectionMetricsCallback(Callback):
                     score = objectness * class_score
                     
                     # Bỏ qua nếu điểm số thấp - TĂNG NGƯỠNG
-                    if score < 0.01:  # Tăng từ 0.00005 lên 0.01
+                    if score < 0.001:  # Tăng từ 0.00005 lên 0.01
                         continue
                     
                     # Chuyển sang tọa độ hình ảnh
