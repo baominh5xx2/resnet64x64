@@ -407,7 +407,8 @@ def train(args):
         validation_data=val_dataset,
         epochs=args.epochs,
         callbacks=callbacks,
-        verbose=1
+        verbose=1,  # Chỉ hiển thị một thanh tiến trình cho mỗi epoch
+        use_multiprocessing=False  # Tắt multiprocessing để tránh in lặp lại thông báo
     )
     
     # Save final model with info

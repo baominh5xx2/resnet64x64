@@ -160,6 +160,7 @@ class YOLODatasetFromPaths(Sequence):
         self.class_names = class_names
         self.augment = augment
         self.verbose = verbose
+        self.resize_warning_shown = False  # Flag để kiểm soát việc hiển thị thông báo resize
         
         # Kiểm tra và điều chỉnh grid_size nếu cần
         if self.img_size % self.grid_size != 0:
@@ -214,10 +215,11 @@ class YOLODatasetFromPaths(Sequence):
                 continue
             
             # Kiểm tra và thông báo khi resize ảnh không đúng kích thước (chỉ trong lần đầu)
-            if i == start_idx and self.verbose:
+            if i == start_idx and not self.resize_warning_shown:
                 orig_h, orig_w = img.shape[:2]
                 if orig_h != self.img_size or orig_w != self.img_size:
                     print(f"Resizing image from {orig_w}x{orig_h} to {self.img_size}x{self.img_size}")
+                    self.resize_warning_shown = True
             
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img = cv2.resize(img, (self.img_size, self.img_size))

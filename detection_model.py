@@ -91,18 +91,33 @@ class ResNetYOLODetection:
                 print(f"Applied pooling: {x.shape}")
         
         # Detection head - predict bounding boxes, objectness and class probabilities
-        # Output shape: [batch_size, grid_size, grid_size, output_dims]
         x = layers.Conv2D(512, kernel_size=3, padding='same', activation=self.activation)(x)
-        detection_output = layers.Conv2D(
-            self.output_dims, 
-            kernel_size=1, 
-            activation=None, 
-            padding='same', 
-            name='detection_output'
+        raw_detection_output = layers.Conv2D(
+            self.output_dims,
+            kernel_size=1,
+            activation=None, # Output raw logits/values
+            padding='same',
+            name='raw_detection_output'
         )(x)
-        
-        print(f"Final output shape: {detection_output.shape}")
-        
+
+        print(f"Raw output shape: {raw_detection_output.shape}")
+
+        # Apply activations to different parts of the output
+        # Box coordinates (x, y) -> sigmoid [0, 1] relative to cell
+        pred_xy = tf.keras.activations.sigmoid(raw_detection_output[..., 0:2])
+        # Box dimensions (w, h) -> linear (or exp for positivity, but linear is simpler with MSE)
+        # Keep them relative to grid size for now
+        pred_wh = raw_detection_output[..., 2:4]
+        # Objectness score -> sigmoid [0, 1] probability
+        pred_obj = tf.keras.activations.sigmoid(raw_detection_output[..., 4:5])
+        # Class probabilities -> softmax across classes
+        pred_class = tf.keras.activations.softmax(raw_detection_output[..., 5:])
+
+        # Concatenate activated outputs
+        detection_output = tf.concat([pred_xy, pred_wh, pred_obj, pred_class], axis=-1, name='detection_output')
+
+        print(f"Final activated output shape: {detection_output.shape}")
+
         # Create model
         model = models.Model(inputs, detection_output)
         return model
@@ -119,9 +134,11 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
     
     # Custom loss function for object detection
     def detection_loss(y_true, y_pred):
-        # Debugging info
-        print(f"y_true shape: {y_true.shape}")
-        print(f"y_pred shape: {y_pred.shape}")
+        # Debugging info - chỉ in khi chạy lần đầu
+        if not hasattr(detection_loss, 'shape_printed'):
+            print(f"y_true shape: {y_true.shape}")
+            print(f"y_pred shape: {y_pred.shape}")
+            detection_loss.shape_printed = True
         
         # Extract components from prediction tensors
         # y_true and y_pred shapes: [batch, grid_size, grid_size, 5+num_classes]
@@ -133,36 +150,52 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
         true_xy = y_true[..., 0:2]
         true_wh = y_true[..., 2:4]
         
-        # Objectness scores
+        # Objectness scores (already sigmoid activated)
         pred_obj = y_pred[..., 4:5]
         true_obj = y_true[..., 4:5]
         
-        # Class probabilities
+        # Class probabilities (already softmax activated)
         pred_class = y_pred[..., 5:]
         true_class = y_true[..., 5:]
         
         # Calculate coordinate loss (using mean squared error)
-        xy_loss = tf.reduce_sum(tf.square(true_xy - pred_xy) * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1)
-        wh_loss = tf.reduce_sum(tf.square(true_wh - pred_wh) * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1)
+        # Ensure true_xy and true_wh are correctly scaled if needed
+        xy_loss = tf.reduce_sum(tf.square(true_xy - pred_xy) * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
+        # Using sqrt(wh) can sometimes be more stable, but MSE is standard too
+        wh_loss = tf.reduce_sum(tf.square(tf.sqrt(true_wh + 1e-6) - tf.sqrt(tf.abs(pred_wh) + 1e-6)) * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0) # Use sqrt for stability, abs for pred_wh
         
         # Calculate objectness loss (binary cross-entropy)
+        # Use tf.keras.losses.binary_crossentropy directly on probabilities
         obj_loss = tf.keras.losses.binary_crossentropy(true_obj, pred_obj)
-        obj_loss = tf.reduce_mean(obj_loss)
+        
+        # Penalize background predictions more (no_obj_loss)
+        no_obj_mask = 1.0 - true_obj
+        no_obj_loss = tf.keras.losses.binary_crossentropy(true_obj, pred_obj) * no_obj_mask
+        obj_loss = tf.reduce_sum(obj_loss * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0) # Loss for cells with objects
+        no_obj_loss = tf.reduce_sum(no_obj_loss) / tf.maximum(tf.reduce_sum(no_obj_mask), 1.0) # Loss for cells without objects
         
         # Calculate class loss (only where objects exist)
+        # Use tf.keras.losses.categorical_crossentropy directly on probabilities
         class_loss = tf.keras.losses.categorical_crossentropy(true_class, pred_class) * true_obj[..., 0]
-        class_loss = tf.reduce_sum(class_loss) / tf.maximum(tf.reduce_sum(true_obj), 1)
+        class_loss = tf.reduce_sum(class_loss) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
         
-        # Total loss with weighting factors
-        total_loss = 5 * xy_loss + 5 * wh_loss + obj_loss + class_loss
+        # Total loss with weighting factors (adjust weights as needed)
+        lambda_coord = 5.0
+        lambda_noobj = 0.5
+        lambda_obj = 1.0
+        lambda_class = 1.0
+        
+        total_loss = (lambda_coord * (xy_loss + wh_loss) +
+                      lambda_obj * obj_loss +
+                      lambda_noobj * no_obj_loss +
+                      lambda_class * class_loss)
         
         return total_loss
     
     # Compile model with custom loss and metrics
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-        loss=detection_loss,
-        metrics=['accuracy']  # Note: accuracy isn't very meaningful for detection tasks
+        loss=detection_loss
     )
     
-    return model 
+    return model
