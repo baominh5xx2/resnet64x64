@@ -5,9 +5,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import cv2
 import json
+import yaml
 from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping, TensorBoard, Callback
 
-from dataset import get_data_loaders
+from dataset import get_data_loaders, YOLODatasetFromPaths
 from detection_model import build_detection_model
 from utils import process_predictions, draw_boxes, plot_detection_results
 
@@ -288,15 +289,65 @@ def save_model_with_info(model, save_path, grid_size, num_classes):
     print(f"Model saved to {save_path}")
     print(f"Model info saved to {info_path}")
 
+def parse_yaml_data(yaml_path):
+    """Parse YAML data file in YOLOv5 format"""
+    with open(yaml_path, 'r') as f:
+        data = yaml.safe_load(f)
+    
+    print(f"Loaded data config from: {yaml_path}")
+    return data
+
 def train(args):
     """Train the detection model"""
     print("Loading dataset...")
-    train_dataset, val_dataset, num_classes = get_data_loaders(
-        args.data_path,
-        img_size=args.img_size,
-        grid_size=args.grid_size,
-        batch_size=args.batch_size
-    )
+    
+    # Kiểm tra xem data_path có phải là file yaml không
+    if args.data_path.endswith('.yaml') or args.data_path.endswith('.yml'):
+        # Đọc file yaml
+        data_config = parse_yaml_data(args.data_path)
+        
+        # Lấy đường dẫn đến train.txt và val.txt
+        train_path = data_config.get('train', '')
+        val_path = data_config.get('val', '')
+        
+        # Lấy số lớp và tên lớp
+        num_classes = data_config.get('nc', 0)
+        class_names = data_config.get('names', [f'class_{i}' for i in range(num_classes)])
+        
+        print(f"Dataset config from YAML:")
+        print(f"  - Train path: {train_path}")
+        print(f"  - Val path: {val_path}")
+        print(f"  - Number of classes: {num_classes}")
+        
+        # Tạo dataset từ file paths
+        train_dataset = YOLODatasetFromPaths(
+            train_path,
+            img_size=args.img_size,
+            grid_size=args.grid_size,
+            batch_size=args.batch_size,
+            num_classes=num_classes,
+            class_names=class_names,
+            augment=True
+        )
+        
+        val_dataset = YOLODatasetFromPaths(
+            val_path,
+            img_size=args.img_size,
+            grid_size=args.grid_size,
+            batch_size=args.batch_size,
+            num_classes=num_classes,
+            class_names=class_names,
+            augment=False
+        )
+    else:
+        # Sử dụng cách cũ nếu là đường dẫn thư mục
+        train_dataset, val_dataset, num_classes = get_data_loaders(
+            args.data_path,
+            img_size=args.img_size,
+            grid_size=args.grid_size,
+            batch_size=args.batch_size
+        )
+        class_names = train_dataset.class_names if hasattr(train_dataset, 'class_names') else None
     
     print(f"Building model with {num_classes} classes...")
     model = build_detection_model(
@@ -484,15 +535,15 @@ def inference(model, image_path, grid_size=8, num_classes=1, class_names=None, i
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train object detection model')
-    parser.add_argument('--data_path', type=str, required=True, 
-                      help='Path to the dataset directory')
-    parser.add_argument('--output_dir', type=str, default='./output',
+    parser.add_argument('--data_path', '--data', type=str, required=True, 
+                      help='Path to dataset directory or YAML file (required)')
+    parser.add_argument('--output_dir', '--name', type=str, default='./output',
                       help='Directory to save models and results')
-    parser.add_argument('--img_size', type=int, default=64,
+    parser.add_argument('--img_size', '--img', type=int, default=64,
                       help='Image size (square)')
     parser.add_argument('--grid_size', type=int, default=8,
                       help='Detection grid size')
-    parser.add_argument('--batch_size', type=int, default=16,
+    parser.add_argument('--batch_size', '--batch', type=int, default=16,
                       help='Batch size for training')
     parser.add_argument('--epochs', type=int, default=50,
                       help='Number of epochs to train')
@@ -500,8 +551,26 @@ if __name__ == '__main__':
                       help='Number of worker processes for data loading')
     parser.add_argument('--evaluate', action='store_true',
                       help='Evaluate model after training')
+    parser.add_argument('--weights', type=str, default=None, 
+                      help='[Not implemented] Path to pre-trained weights')
     
     args = parser.parse_args()
+    
+    # Hiển thị thông số
+    print("=== Training Configuration ===")
+    print(f"Dataset path: {args.data_path}")
+    print(f"Output directory: {args.output_dir}")
+    print(f"Image size: {args.img_size}x{args.img_size}")
+    print(f"Grid size: {args.grid_size}")
+    print(f"Batch size: {args.batch_size}")
+    print(f"Epochs: {args.epochs}")
+    print(f"Workers: {args.workers}")
+    print(f"Evaluate after training: {args.evaluate}")
+    print(f"Pre-trained weights: {args.weights}")
+    print("=============================")
+    
+    if args.weights:
+        print("WARNING: Loading pre-trained weights is not implemented yet. Training from scratch.")
     
     # Train the model
     model, train_dataset, val_dataset, num_classes = train(args)
