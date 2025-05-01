@@ -166,13 +166,18 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
         # Calculate objectness loss (binary cross-entropy)
         obj_loss_raw = tf.keras.losses.binary_crossentropy(true_obj, pred_obj)
         
-        # Phần code được sửa chữa:
-        # Đảm bảo obj_loss_raw và true_obj có cùng kích thước
+        # Expand dims để phù hợp với kích thước của true_obj
+        obj_loss_raw = tf.expand_dims(obj_loss_raw, axis=-1)  # Shape: [batch, grid, grid, 1]
+        
+        # Giờ phép nhân sẽ hoạt động đúng
         obj_loss = tf.reduce_sum(obj_loss_raw * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
         
         # Penalize background predictions more
         no_obj_mask = 1.0 - true_obj  # Shape: [batch, grid, grid, 1]
-        no_obj_loss_raw = tf.keras.losses.binary_crossentropy(true_obj, pred_obj) * no_obj_mask
+        
+        # Tương tự cho no_obj_loss_raw
+        no_obj_loss_raw_expanded = tf.expand_dims(tf.keras.losses.binary_crossentropy(true_obj, pred_obj), axis=-1)
+        no_obj_loss_raw = no_obj_loss_raw_expanded * no_obj_mask
         no_obj_loss = tf.reduce_sum(no_obj_loss_raw) / tf.maximum(tf.reduce_sum(no_obj_mask), 1.0)
         
         # Sửa lỗi class loss - đảm bảo kích thước tương thích
