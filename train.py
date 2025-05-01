@@ -407,7 +407,6 @@ def train(args):
         validation_data=val_dataset,
         epochs=args.epochs,
         callbacks=callbacks,
-        workers=args.workers,
         verbose=1
     )
     
