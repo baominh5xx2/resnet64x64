@@ -205,4 +205,3 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
     )
     
     return model
-``` 
