@@ -177,8 +177,12 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
         
         # Calculate class loss (only where objects exist)
         # Use tf.keras.losses.categorical_crossentropy directly on probabilities
-        class_loss = tf.keras.losses.categorical_crossentropy(true_class, pred_class) * true_obj[..., 0]
-        class_loss = tf.reduce_sum(class_loss) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
+        # Ensure the mask shape matches the loss shape before multiplication
+        class_loss_per_cell = tf.keras.losses.categorical_crossentropy(true_class, pred_class) # Shape: (batch, grid, grid)
+        object_mask = tf.squeeze(true_obj, axis=-1) # Squeeze mask to shape: (batch, grid, grid)
+
+        class_loss = class_loss_per_cell * object_mask # Element-wise multiplication
+        class_loss = tf.reduce_sum(class_loss) / tf.maximum(tf.reduce_sum(true_obj), 1.0) # Reduce sum
         
         # Total loss with weighting factors (adjust weights as needed)
         lambda_coord = 5.0
