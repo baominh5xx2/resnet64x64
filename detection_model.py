@@ -102,20 +102,20 @@ class ResNetYOLODetection:
 
         print(f"Raw output shape: {raw_detection_output.shape}")
 
-        # Apply activations to different parts of the output
+        # Apply activations to different parts of the output using Lambda layers if needed
         # Box coordinates (x, y) -> sigmoid [0, 1] relative to cell
         pred_xy = layers.Activation('sigmoid', name='pred_xy')(raw_detection_output[..., 0:2])
         # Box dimensions (w, h) -> linear (or exp for positivity, but linear is simpler with MSE)
-        pred_wh = raw_detection_output[..., 2:4]
+        pred_wh = layers.Lambda(lambda x: x, name='pred_wh')(raw_detection_output[..., 2:4])
         # Objectness score -> sigmoid [0, 1] probability
         pred_obj = layers.Activation('sigmoid', name='pred_obj')(raw_detection_output[..., 4:5])
         # Class probabilities -> softmax across classes
         pred_class = layers.Activation('softmax', name='pred_class')(raw_detection_output[..., 5:])
 
-        # Concatenate activated outputs - use layers.Concatenate instead of tf.concat
-        detection_output = layers.Concatenate(axis=-1, name='detection_output')(
-            [pred_xy, pred_wh, pred_obj, pred_class]
-        )
+        # IMPORTANT: Use Concatenate layer from Keras instead of tf.concat
+        detection_output = layers.Concatenate(axis=-1, name='detection_output')([
+            pred_xy, pred_wh, pred_obj, pred_class
+        ])
 
         print(f"Final activated output shape: {detection_output.shape}")
 
