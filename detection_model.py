@@ -176,13 +176,14 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
         no_obj_loss = tf.reduce_sum(no_obj_loss) / tf.maximum(tf.reduce_sum(no_obj_mask), 1.0) # Loss for cells without objects
         
         # Calculate class loss (only where objects exist)
-        # Use tf.keras.losses.categorical_crossentropy directly on probabilities
-        # Ensure the mask shape matches the loss shape before multiplication
-        class_loss_per_cell = tf.keras.losses.categorical_crossentropy(true_class, pred_class) # Shape: (batch, grid, grid)
-        object_mask = tf.squeeze(true_obj, axis=-1) # Squeeze mask to shape: (batch, grid, grid)
-
-        class_loss = class_loss_per_cell * object_mask # Element-wise multiplication
-        class_loss = tf.reduce_sum(class_loss) / tf.maximum(tf.reduce_sum(true_obj), 1.0) # Reduce sum
+        # Use reshape and broadcasting to ensure shape compatibility
+        class_loss_per_cell = tf.keras.losses.categorical_crossentropy(true_class, pred_class)  # Shape: (batch, grid, grid)
+        
+        # Reshape class_loss to match true_obj shape for multiplication
+        class_loss_per_cell = tf.expand_dims(class_loss_per_cell, axis=-1)  # Shape: (batch, grid, grid, 1)
+        
+        # Now shapes match for element-wise multiplication
+        class_loss = tf.reduce_sum(class_loss_per_cell * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
         
         # Total loss with weighting factors (adjust weights as needed)
         lambda_coord = 5.0
