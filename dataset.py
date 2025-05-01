@@ -4,7 +4,7 @@ import numpy as np
 from tensorflow.keras.utils import Sequence
 import cv2
 import math
-import tensorflow_addons as tfa
+from scipy.ndimage import rotate
 
 class YOLODataset(Sequence):
     def __init__(self, dataset_path, img_size=64, grid_size=8, batch_size=16, augment=True, verbose=True):
@@ -152,16 +152,29 @@ class YOLODataset(Sequence):
         return np.array(batch_x), np.array(batch_y)
 
     def augment_image(self, image, label):
-        # Augment image
+        """Augment image and potentially label"""
+        # Augment image using tf.image
+        image_np = image.numpy() # Chuyển sang NumPy để dùng scipy
+
+        # Random rotation using scipy
+        angle = np.random.uniform(-15, 15)
+        # Xoay ảnh, giữ nguyên kích thước và không thay đổi giá trị pixel nền (mode='nearest')
+        image_np = rotate(image_np, angle, reshape=False, mode='nearest')
+
+        # Chuyển lại thành Tensor
+        image = tf.convert_to_tensor(image_np, dtype=tf.float32)
+
+        # Các augmentation khác dùng tf.image (áp dụng trên Tensor)
         image = tf.image.random_brightness(image, 0.2)
         image = tf.image.random_contrast(image, 0.8, 1.2)
-        image = tf.image.random_flip_left_right(image)
+        image = tf.image.random_flip_left_right(image) # Lật ảnh cũng cần cập nhật label nếu có bbox
         image = tf.image.random_saturation(image, 0.8, 1.2)
-        
-        # Random rotation
-        angle = tf.random.uniform([], -15, 15) * math.pi / 180
-        image = tfa.image.rotate(image, angle)
-        
+        image = tf.clip_by_value(image, 0.0, 1.0) # Đảm bảo giá trị pixel trong khoảng [0, 1]
+
+        # Lưu ý: Nếu bạn augment cả bounding box (label),
+        # bạn cần cập nhật tọa độ bbox sau khi xoay và lật ảnh.
+        # Hiện tại, hàm này chỉ augment ảnh, label được trả về nguyên gốc.
+
         return image, label
 
 class YOLODatasetFromPaths(Sequence):
