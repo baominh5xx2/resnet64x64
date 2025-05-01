@@ -253,6 +253,13 @@ class YOLODatasetFromPaths(Sequence):
             img = cv2.resize(img, (self.img_size, self.img_size))
             img = img.astype(np.float32) / 255.0
             
+            # Thêm augmentation nếu được bật
+            if self.augment:
+                # Chuyển sang tensor để dùng với augment_image
+                img_tensor = tf.convert_to_tensor(img)
+                img_tensor, _ = self.augment_image(img_tensor, None)
+                img = img_tensor.numpy()  # Chuyển lại numpy
+            
             # Load labels (YOLO format: class x_center y_center width height)
             labels = []
             if os.path.exists(label_path):

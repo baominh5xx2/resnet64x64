@@ -92,17 +92,17 @@ class ResNetYOLODetection:
         
         # Detection head - predict bounding boxes, objectness and class probabilities
         x = layers.Conv2D(512, kernel_size=3, padding='same', 
-                          kernel_regularizer=tf.keras.regularizers.l2(0.01),
+                          kernel_regularizer=tf.keras.regularizers.l2(0.001),  # Giảm từ 0.01 xuống 0.001
                           activation=self.activation)(x)
         x = layers.BatchNormalization()(x)
-        x = layers.Dropout(0.5)(x)  # Tăng dropout rate
+        x = layers.Dropout(0.4)(x)  # Tăng dropout rate
         
         raw_detection_output = layers.Conv2D(
             self.output_dims,
             kernel_size=1,
             activation=None,
             padding='same',
-            kernel_regularizer=tf.keras.regularizers.l2(0.01),  # Thêm L2 regularization
+            kernel_regularizer=tf.keras.regularizers.l2(0.001),  # Giảm từ 0.01 xuống 0.001
             name='raw_detection_output'
         )(x)
 
