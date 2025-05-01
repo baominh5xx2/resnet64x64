@@ -35,7 +35,7 @@ class ResNetYOLODetection:
         x = layers.Activation(self.activation)(x)
         
         # Residual blocks with increasing filters (same as in ResNetBuilder)
-        x = ResNetBlock(64, downsample=False, activation=self.activation, dropout_rate=self.dropout_rate)(x)
+        x = ResNetBlock(64, downsample=True, activation=self.activation, dropout_rate=self.dropout_rate)(x)
         x = ResNetBlock(64, downsample=False, activation=self.activation, dropout_rate=self.dropout_rate)(x)
         
         # After these blocks, feature map size is still the same as input (64x64)
