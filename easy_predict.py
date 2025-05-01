@@ -159,7 +159,7 @@ def predict_image(model_path, image_path, class_file=None, output_path=None, con
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phát hiện đối tượng trong ảnh với bất kỳ kích thước nào")
-    parser.add_argument("--model", type=str, required=True, help="Đường dẫn đến model (.h5)")
+    parser.add_argument("--model", type=str, required=True, help="Đường dẫn đến model (.h5 hoặc .keras)")
     parser.add_argument("--image", type=str, required=True, help="Đường dẫn đến ảnh cần phân tích")
     parser.add_argument("--classes", type=str, default=None, help="Đường dẫn đến file tên lớp")
     parser.add_argument("--output", type=str, default=None, help="Đường dẫn để lưu ảnh kết quả")

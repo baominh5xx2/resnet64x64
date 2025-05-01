@@ -271,8 +271,12 @@ class DetectionMetricsCallback(Callback):
 
 def save_model_with_info(model, save_path, grid_size, num_classes):
     """Save model along with important info for prediction"""
+    # Đảm bảo đường dẫn kết thúc bằng .keras
+    if not save_path.endswith('.keras'):
+        save_path = os.path.splitext(save_path)[0] + '.keras'
+    
     # Save model weights
-    model.save(save_path, save_format='h5')
+    model.save(save_path, save_format='keras')
     
     # Save additional info
     info_path = os.path.splitext(save_path)[0] + '_info.json'
@@ -362,7 +366,7 @@ def train(args):
     # Setup callbacks
     callbacks = [
         ModelCheckpoint(
-            os.path.join(args.output_dir, 'model_best.h5'),
+            os.path.join(args.output_dir, 'model_best.keras'),
             monitor='val_loss',
             save_best_only=True,
             mode='min',
@@ -408,7 +412,7 @@ def train(args):
     )
     
     # Save final model with info
-    final_model_path = os.path.join(args.output_dir, 'model_final.h5')
+    final_model_path = os.path.join(args.output_dir, 'model_final.keras')
     save_model_with_info(model, final_model_path, args.grid_size, num_classes)
     
     # Plot training history
