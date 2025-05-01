@@ -15,6 +15,10 @@ class ResNetYOLODetection:
         # 1 for objectness score
         # num_classes for class probabilities
         self.output_dims = 5 + num_classes
+        
+        # Calculate needed downsampling to reach required grid size
+        self.downsample_factor = self.input_shape[0] // self.grid_size
+        print(f"Input shape: {self.input_shape}, Grid size: {self.grid_size}, Downsample factor: {self.downsample_factor}")
     
     def build(self):
         # Use the ResNetBuilder for the backbone with modified output
@@ -34,19 +38,57 @@ class ResNetYOLODetection:
         x = layers.BatchNormalization()(x)
         x = layers.Activation(self.activation)(x)
         
-        # Residual blocks with increasing filters (same as in ResNetBuilder)
+        # Print current size
+        print(f"After initial layer: {x.shape}")
+        
+        # Tính toán số lần cần downsample để đạt được kích thước grid
+        # Ví dụ: từ 64x64 -> 8x8 cần 3 lần downsample (stride=2)
+        # Với 320x320 -> 8x8 cần 4-5 lần
+        
+        # Residual blocks với downsampling được điều chỉnh theo kích thước đầu vào
+        # Đổi block đầu tiên từ downsample=False thành downsample=True để tạo projection kênh từ 32->64
         x = ResNetBlock(64, downsample=True, activation=self.activation, dropout_rate=self.dropout_rate)(x)
+        print(f"After ResNet block 1: {x.shape}")
+        
+        # Block thứ hai giữ nguyên kích thước
         x = ResNetBlock(64, downsample=False, activation=self.activation, dropout_rate=self.dropout_rate)(x)
+        print(f"After ResNet block 2: {x.shape}")
         
-        # After these blocks, feature map size is still the same as input (64x64)
-        # We want to downsample to 8x8 grid for detection
-        x = ResNetBlock(128, downsample=True, activation=self.activation, dropout_rate=self.dropout_rate)(x)  # 32x32
+        # Bắt đầu áp dụng downsample để giảm kích thước
+        # Tính toán số lần downsample còn lại để đạt được grid_size
+        current_size = self.input_shape[0]  # Ban đầu là 64 hoặc 320
+        downsamples_needed = 0
         
-        # Add more blocks with downsampling to reach 8x8 feature map
-        x = ResNetBlock(256, downsample=True, activation=self.activation, dropout_rate=self.dropout_rate)(x)  # 16x16
+        while current_size > self.grid_size:
+            current_size = current_size // 2
+            downsamples_needed += 1
         
-        # Last downsample to 8x8 (our grid size)
-        x = ResNetBlock(512, downsample=True, activation=self.activation, dropout_rate=self.dropout_rate)(x)  # 8x8
+        # Đã dùng 1 lần downsample ở block đầu
+        downsamples_needed = max(0, downsamples_needed - 1)
+        print(f"Downsamples needed: {downsamples_needed}")
+        
+        # Áp dụng các lần downsample còn lại
+        filters = 128
+        for i in range(downsamples_needed):
+            x = ResNetBlock(filters, downsample=True, activation=self.activation, dropout_rate=self.dropout_rate)(x)
+            print(f"After ResNet block {i+3}: {x.shape}")
+            filters = min(512, filters * 2)  # Tăng số filter, tối đa là 512
+        
+        # Kiểm tra kích thước đầu ra
+        current_shape = x.shape[1]  # Lấy kích thước height
+        if current_shape != self.grid_size:
+            print(f"WARNING: Current output shape {current_shape} doesn't match desired grid size {self.grid_size}")
+            # Áp dụng thêm upsampling hoặc pooling nếu cần
+            if current_shape < self.grid_size:
+                # Upsampling nếu output quá nhỏ
+                scale_factor = self.grid_size // current_shape
+                x = layers.UpSampling2D(size=(scale_factor, scale_factor))(x)
+                print(f"Applied upsampling: {x.shape}")
+            elif current_shape > self.grid_size:
+                # Downsampling nếu output quá lớn
+                pool_size = current_shape // self.grid_size
+                x = layers.AveragePooling2D(pool_size=(pool_size, pool_size))(x)
+                print(f"Applied pooling: {x.shape}")
         
         # Detection head - predict bounding boxes, objectness and class probabilities
         # Output shape: [batch_size, grid_size, grid_size, output_dims]
@@ -58,6 +100,8 @@ class ResNetYOLODetection:
             padding='same', 
             name='detection_output'
         )(x)
+        
+        print(f"Final output shape: {detection_output.shape}")
         
         # Create model
         model = models.Model(inputs, detection_output)
@@ -75,6 +119,10 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
     
     # Custom loss function for object detection
     def detection_loss(y_true, y_pred):
+        # Debugging info
+        print(f"y_true shape: {y_true.shape}")
+        print(f"y_pred shape: {y_pred.shape}")
+        
         # Extract components from prediction tensors
         # y_true and y_pred shapes: [batch, grid_size, grid_size, 5+num_classes]
         
