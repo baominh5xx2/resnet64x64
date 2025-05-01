@@ -1,10 +1,7 @@
 # filepath: f:\Resnet_small_images\requirements.txt
-tensorflow>=2.13.0,<2.16.0 # Hoặc phiên bản TF tương thích với TFA nếu muốn giữ TFA
-# Hoặc nếu bỏ TFA và dùng scipy:
-# tensorflow>=2.16.0 # Hoặc phiên bản TF bạn đang dùng (2.18.0)
+tensorflow>=2.4.0
 opencv-python>=4.5.0
 numpy>=1.19.0
 matplotlib>=3.3.0
 PyYAML>=5.0
-scipy>=1.6.0 # Thêm scipy
-# tensorflow-addons>=0.15.0 # Xóa hoặc comment dòng này
+tensorflow-addons>=0.15.0

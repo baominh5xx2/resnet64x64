@@ -8,6 +8,61 @@ import json
 import yaml
 from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping, TensorBoard, Callback
 
+# ===== FORCE GPU USAGE =====
+# Cấu hình GPU để đảm bảo TensorFlow sử dụng GPU
+# Đặt bộ nhớ GPU tăng động
+print("Configuring GPU settings...")
+physical_devices = tf.config.list_physical_devices('GPU')
+if physical_devices:
+    print(f"Found {len(physical_devices)} GPU(s):")
+    for device in physical_devices:
+        print(f"  - {device.name}")
+    try:
+        for device in physical_devices:
+            tf.config.experimental.set_memory_growth(device, True)
+        # Đặt TensorFlow chỉ nhìn thấy GPU đầu tiên
+        # tf.config.set_visible_devices(physical_devices[0], 'GPU')
+        print("Memory growth enabled for all GPUs")
+        
+        # Kiểm tra các thiết bị logic
+        logical_devices = tf.config.list_logical_devices('GPU')
+        print(f"Available logical GPU devices: {len(logical_devices)}")
+    except Exception as e:
+        print(f"Error configuring GPU: {e}")
+else:
+    print("WARNING: No GPU found, using CPU for training")
+
+# Thử bật mixed precision nếu có thể
+try:
+    policy = tf.keras.mixed_precision.Policy('mixed_float16')
+    tf.keras.mixed_precision.set_global_policy(policy)
+    print(f"Mixed precision enabled: {policy.compute_dtype}/{policy.variable_dtype}")
+except Exception as e:
+    print(f"Could not enable mixed precision: {e}")
+
+# Buộc sử dụng GPU cho các hoạt động
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Chỉ sử dụng GPU đầu tiên
+os.environ["TF_GPU_THREAD_MODE"] = "gpu_private"  # Tối ưu hóa performance
+os.environ["TF_GPU_THREAD_COUNT"] = "8"  # Số lượng thread GPU
+
+# Force TensorFlow to use the GPU
+tf.config.set_soft_device_placement(False)  # Không tự động chuyển operations từ GPU sang CPU
+
+# Print device placements để debug
+print("\nDevice placement:")
+with tf.device('/GPU:0'):
+    a = tf.constant([[1.0, 2.0], [3.0, 4.0]])
+    b = tf.constant([[1.0, 1.0], [0.0, 1.0]])
+    c = tf.matmul(a, b)
+    print(f"Matrix multiplication result: {c}")
+    print(f"Tensor device: {c.device}")
+
+print("\nTensorFlow eager execution:", tf.executing_eagerly())
+print("TensorFlow CUDA available:", tf.test.is_built_with_cuda())
+print("TensorFlow GPU available:", tf.test.is_gpu_available())
+print("======================\n")
+
+# Rest of your imports
 from dataset import get_data_loaders, YOLODatasetFromPaths
 from detection_model import build_detection_model
 from utils import process_predictions, draw_boxes, plot_detection_results
