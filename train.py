@@ -407,8 +407,7 @@ def train(args):
         validation_data=val_dataset,
         epochs=args.epochs,
         callbacks=callbacks,
-        verbose=1,  # Chỉ hiển thị một thanh tiến trình cho mỗi epoch
-        use_multiprocessing=False  # Tắt multiprocessing để tránh in lặp lại thông báo
+        verbose=1  # Chỉ hiển thị một thanh tiến trình cho mỗi epoch
     )
     
     # Save final model with info
@@ -582,4 +581,4 @@ if __name__ == '__main__':
     # Evaluate if requested
     if args.evaluate:
         import cv2  # Import here as it's used in evaluate
-        evaluate(model, val_dataset, num_classes, args.grid_size, args.output_dir) 
+        evaluate(model, val_dataset, num_classes, args.grid_size, args.output_dir)
