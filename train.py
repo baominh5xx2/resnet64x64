@@ -225,31 +225,36 @@ class DetectionMetricsCallback(Callback):
     
     def calculate_iou_matrix(self, boxes1, boxes2):
         """Tính ma trận IoU giữa hai tập hợp boxes"""
-        # Mở rộng kích thước
-        b1_x1, b1_y1, b1_x2, b1_y2 = np.split(boxes1, 4, axis=1)
-        b2_x1, b2_y1, b2_x2, b2_y2 = np.split(boxes2, 4, axis=1)
+        # Xử lý trường hợp mảng rỗng
+        if len(boxes1) == 0 or len(boxes2) == 0:
+            return np.zeros((len(boxes1), len(boxes2)))
         
-        # Tính giao
-        inter_x1 = np.maximum(b1_x1, np.transpose(b2_x1))
-        inter_y1 = np.maximum(b1_y1, np.transpose(b2_y1))
-        inter_x2 = np.minimum(b1_x2, np.transpose(b2_x2))
-        inter_y2 = np.minimum(b1_y2, np.transpose(b2_y2))
+        # Khởi tạo ma trận IoU
+        iou_matrix = np.zeros((len(boxes1), len(boxes2)))
         
-        inter_w = np.maximum(0, inter_x2 - inter_x1)
-        inter_h = np.maximum(0, inter_y2 - inter_y1)
+        # Tính IoU cho từng cặp boxes
+        for i, box1 in enumerate(boxes1):
+            for j, box2 in enumerate(boxes2):
+                # Tính phần giao
+                x1 = max(box1[0], box2[0])
+                y1 = max(box1[1], box2[1])
+                x2 = min(box1[2], box2[2])
+                y2 = min(box1[3], box2[3])
+                
+                # Diện tích phần giao
+                inter_area = max(0, x2 - x1) * max(0, y2 - y1)
+                
+                # Diện tích của từng box
+                box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+                box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+                
+                # Diện tích phần hợp
+                union_area = box1_area + box2_area - inter_area
+                
+                # IoU
+                iou_matrix[i, j] = inter_area / union_area if union_area > 0 else 0
         
-        inter_area = inter_w * inter_h
-        
-        # Tính hợp
-        b1_area = (b1_x2 - b1_x1) * (b1_y2 - b1_y1)
-        b2_area = (b2_x2 - b2_x1) * (b2_y2 - b2_y1)
-        
-        union_area = b1_area + np.transpose(b2_area) - inter_area
-        
-        # Tính IoU
-        iou = inter_area / union_area
-        
-        return np.squeeze(iou)
+        return iou_matrix
     
     def calculate_ap_from_precision_recall(self, precision, recall):
         """Tính AP từ precision và recall bằng phương pháp AUC"""
