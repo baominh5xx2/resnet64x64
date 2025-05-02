@@ -420,29 +420,22 @@ def train(args):
     save_model_with_info(model, final_model_path, args.grid_size, num_classes)
     
     # Plot training history
-    plt.figure(figsize=(15, 5))
-    
-    plt.subplot(1, 3, 1)
+    plt.figure(figsize=(12, 5))
+
+    # Subplot 1: Loss
+    plt.subplot(1, 2, 1)
     plt.plot(history.history['loss'], label='Train')
     plt.plot(history.history['val_loss'], label='Validation')
     plt.title('Loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.legend()
-    
-    plt.subplot(1, 3, 2)
-    plt.plot(history.history['accuracy'], label='Train')
-    plt.plot(history.history['val_accuracy'], label='Validation')
-    plt.title('Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.legend()
-    
-    # Thêm biểu đồ cho AP và AR
-    plt.subplot(1, 3, 3)
+
+    # Subplot 2: AP and AR
+    plt.subplot(1, 2, 2)
     ap_history = [cb.ap_history for cb in callbacks if isinstance(cb, DetectionMetricsCallback)]
     ar_history = [cb.ar_history for cb in callbacks if isinstance(cb, DetectionMetricsCallback)]
-    
+
     if ap_history and ar_history:
         plt.plot(ap_history[0], label='AP')
         plt.plot(ar_history[0], label='AR')
@@ -450,7 +443,7 @@ def train(args):
         plt.xlabel('Epoch')
         plt.ylabel('Metric Value')
         plt.legend()
-    
+
     plt.tight_layout()
     plt.savefig(os.path.join(args.output_dir, 'training_history.png'))
     
