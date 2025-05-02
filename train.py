@@ -23,9 +23,44 @@ class DetectionMetricsCallback(Callback):
         self.ap_history = []
         self.ar_history = []
         
+        # Tạo một validation subset chỉ chứa ảnh có label
+        self.valid_images_batch_x = []
+        self.valid_images_batch_y = []
+        self.has_valid_images = False
+        self._prepare_valid_images_subset()
+        
+    def _prepare_valid_images_subset(self):
+        """Lọc validation set để chỉ giữ những ảnh có label"""
+        print("Lọc validation set để tìm ảnh có label...")
+        
+        # Lặp qua validation set để tìm ảnh có label
+        for batch_x, batch_y in self.validation_data:
+            # Kiểm tra từng ảnh trong batch
+            for i in range(len(batch_x)):
+                # Kiểm tra xem ảnh có chứa ít nhất một đối tượng không 
+                # (objectness > 0 ở bất kỳ grid cell nào)
+                if np.sum(batch_y[i, ..., 4]) > 0:
+                    self.valid_images_batch_x.append(np.expand_dims(batch_x[i], axis=0))
+                    self.valid_images_batch_y.append(np.expand_dims(batch_y[i], axis=0))
+            
+            # Chỉ quét một số batch để tránh quá lâu
+            if len(self.valid_images_batch_x) >= 20:
+                break
+        
+        if len(self.valid_images_batch_x) > 0:
+            print(f"Đã tìm thấy {len(self.valid_images_batch_x)} ảnh có label trong validation set")
+            self.has_valid_images = True
+        else:
+            print("CẢNH BÁO: Không tìm thấy ảnh có label trong validation set!")
+        
     def on_epoch_end(self, epoch, logs=None):
-        # Lấy một batch từ validation data
-        batch_x, batch_y = next(iter(self.validation_data))
+        if not self.has_valid_images:
+            print(" - val_AP: 0.0000 - val_AR: 0.0000 (không có ảnh có label)")
+            return
+        
+        # Kết hợp các ảnh có label thành một batch để đánh giá
+        batch_x = np.vstack(self.valid_images_batch_x)
+        batch_y = np.vstack(self.valid_images_batch_y)
         
         # Dự đoán
         predictions = self.model.predict(batch_x)
