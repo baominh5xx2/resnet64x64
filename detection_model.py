@@ -91,19 +91,20 @@ class ResNetYOLODetection:
                 print(f"Applied pooling: {x.shape}")
         
         # Detection head - predict bounding boxes, objectness and class probabilities
-        x = layers.Conv2D(512, kernel_size=3, padding='same', activation=self.activation)(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.Dropout(0.2)(x)  # Thêm dropout
-        
-        # Add more layers in detection head for better feature extraction
-        x = layers.Conv2D(512, kernel_size=3, padding='same', activation=self.activation)(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.Dropout(0.2)(x)
-
-        # Add another conv block
         x = layers.Conv2D(256, kernel_size=3, padding='same', activation=self.activation)(x)
         x = layers.BatchNormalization()(x)
-        x = layers.Dropout(0.2)(x)
+        x = layers.Dropout(0.3)(x)  # Thêm dropout
+
+        # Removed extra conv blocks to lighten the model
+        # # Add more layers in detection head for better feature extraction
+        # x = layers.Conv2D(512, kernel_size=3, padding='same', activation=self.activation)(x)
+        # x = layers.BatchNormalization()(x)
+        # x = layers.Dropout(0.2)(x)
+        #
+        # # Add another conv block
+        # x = layers.Conv2D(256, kernel_size=3, padding='same', activation=self.activation)(x)
+        # x = layers.BatchNormalization()(x)
+        # x = layers.Dropout(0.2)(x)
 
         raw_detection_output = layers.Conv2D(
             self.output_dims,
@@ -205,7 +206,7 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
         class_loss = tf.reduce_sum(class_loss_per_cell * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
         
         # Total loss with weighting factors
-        lambda_coord = 6.0
+        lambda_coord = 5.0
         lambda_noobj = 0.3
         lambda_obj = 1.0
         lambda_class = 1.0
