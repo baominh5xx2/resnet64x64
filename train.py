@@ -44,7 +44,7 @@ class DetectionMetricsCallback(Callback):
                     self.valid_images_batch_y.append(np.expand_dims(batch_y[i], axis=0))
             
             # Chỉ quét một số batch để tránh quá lâu
-            if len(self.valid_images_batch_x) >= 20:
+            if len(self.valid_images_batch_x) >= 2000:
                 break
         
         if len(self.valid_images_batch_x) > 0:
@@ -552,7 +552,7 @@ def evaluate(model, dataset, num_classes, grid_size=8, output_dir=None):
                     objectness = cell_pred[4]
                     
                     # Bỏ qua nếu objectness thấp
-                    if objectness < 0.01:  # Ngưỡng cao hơn để lọc nhiễu
+                    if objectness < 0.0001:  # Ngưỡng cao hơn để lọc nhiễu
                         continue
                     
                     # Lấy class
@@ -564,7 +564,7 @@ def evaluate(model, dataset, num_classes, grid_size=8, output_dir=None):
                     score = objectness * class_score
                     
                     # Bỏ qua nếu điểm số thấp
-                    if score < 0.01:  # Ngưỡng cao hơn để lọc nhiễu
+                    if score < 0.0001:  # Ngưỡng cao hơn để lọc nhiễu
                         continue
                     
                     # Chuyển sang tọa độ hình ảnh
