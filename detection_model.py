@@ -213,7 +213,6 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
             learning_rate=0.001, 
             momentum=0.9,
             nesterov=True,
-            clipnorm=1.0,
             weight_decay=0.0005  # Weight decay thường dùng trong YOLO
         ),
         loss=detection_loss
