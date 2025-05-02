@@ -3,13 +3,17 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.keras.utils import Sequence
 import cv2
+# Import ANCHORS và iou từ utils
+from utils import ANCHORS, iou, NUM_ANCHORS
 
 class YOLODataset(Sequence):
-    def __init__(self, dataset_path, img_size=64, grid_size=8, batch_size=16, augment=True, verbose=True):
+    def __init__(self, dataset_path, img_size=64, grid_size=8, batch_size=16, anchors=ANCHORS, num_anchors=NUM_ANCHORS, augment=True, verbose=True): # Thêm anchors, num_anchors
         self.dataset_path = dataset_path
         self.img_size = img_size
         self.grid_size = grid_size
         self.batch_size = batch_size
+        self.anchors = anchors # Lưu anchors
+        self.num_anchors = num_anchors # Lưu số lượng anchors
         self.augment = augment
         self.verbose = verbose
         
@@ -109,8 +113,8 @@ class YOLODataset(Sequence):
             S = self.grid_size
             grid_cell_size = self.img_size // S
             
-            # Output: [S, S, 5+num_classes] for each grid cell: [x, y, w, h, objectness, class_probs]
-            y = np.zeros((S, S, 5 + self.num_classes))
+            # Output: [S, S, num_anchors, 5+num_classes] for each grid cell: [x, y, w, h, objectness, class_probs]
+            y = np.zeros((S, S, self.num_anchors, 5 + self.num_classes))
             
             for label in labels:
                 class_id, x_min, y_min, x_max, y_max = label
@@ -135,14 +139,36 @@ class YOLODataset(Sequence):
                 w_cell = width * S
                 h_cell = height * S
                 
-                # Only one prediction per grid cell for simplicity
-                if y[grid_y, grid_x, 4] == 0:  # If no object already assigned
-                    y[grid_y, grid_x, 0] = x_cell
-                    y[grid_y, grid_x, 1] = y_cell
-                    y[grid_y, grid_x, 2] = w_cell
-                    y[grid_y, grid_x, 3] = h_cell
-                    y[grid_y, grid_x, 4] = 1.0  # objectness
-                    y[grid_y, grid_x, 5 + class_id] = 1.0  # class probability
+                # Tính IoU giữa ground truth box và các anchor boxes
+                # Chuyển width, height của GT sang tỉ lệ với grid cell size để so sánh với anchor
+                # Box shape for IoU calculation: [0, 0, width_in_cells, height_in_cells]
+                gt_box_shape = np.array([0, 0, width * S, height * S])
+                # Anchor shapes: [0, 0, anchor_w, anchor_h]
+                anchor_shapes = np.concatenate([np.zeros((self.num_anchors, 2)), self.anchors], axis=-1)
+                ious = iou(gt_box_shape, anchor_shapes)
+
+                # Tìm anchor có IoU cao nhất
+                best_anchor_index = np.argmax(ious)
+
+                # Gán thông tin vào anchor chịu trách nhiệm
+                # Chỉ gán nếu anchor đó chưa được gán bởi object khác (hiếm khi xảy ra nếu anchor phù hợp)
+                if y[grid_y, grid_x, best_anchor_index, 4] == 0:
+                    # Tọa độ tương đối so với grid cell (0-1)
+                    x_cell = x_center * S - grid_x
+                    y_cell = y_center * S - grid_y
+
+                    # Kích thước tương đối so với anchor (sử dụng log để ổn định)
+                    # Thêm epsilon để tránh log(0)
+                    anchor_w, anchor_h = self.anchors[best_anchor_index]
+                    w_rel = np.log((width * S / anchor_w) + 1e-9)
+                    h_rel = np.log((height * S / anchor_h) + 1e-9)
+
+                    y[grid_y, grid_x, best_anchor_index, 0] = x_cell
+                    y[grid_y, grid_x, best_anchor_index, 1] = y_cell
+                    y[grid_y, grid_x, best_anchor_index, 2] = w_rel
+                    y[grid_y, grid_x, best_anchor_index, 3] = h_rel
+                    y[grid_y, grid_x, best_anchor_index, 4] = 1.0  # objectness
+                    y[grid_y, grid_x, best_anchor_index, 5 + class_id] = 1.0  # class probability
             
             batch_x.append(img)
             batch_y.append(y)
@@ -151,13 +177,15 @@ class YOLODataset(Sequence):
 
 class YOLODatasetFromPaths(Sequence):
     """YOLO dataset from text file with list of images (YOLOv5 format)"""
-    def __init__(self, txt_path, img_size=64, grid_size=8, batch_size=16, num_classes=1, class_names=None, augment=True, verbose=True):
+    def __init__(self, txt_path, img_size=64, grid_size=8, batch_size=16, num_classes=1, class_names=None, anchors=ANCHORS, num_anchors=NUM_ANCHORS, augment=True, verbose=True): # Thêm anchors, num_anchors
         self.txt_path = txt_path
         self.img_size = img_size
         self.grid_size = grid_size
         self.batch_size = batch_size
         self.num_classes = num_classes
         self.class_names = class_names
+        self.anchors = anchors # Lưu anchors
+        self.num_anchors = num_anchors # Lưu số lượng anchors
         self.augment = augment
         self.verbose = verbose
         self.resize_warning_shown = False  # Flag để kiểm soát việc hiển thị thông báo resize
@@ -256,8 +284,8 @@ class YOLODatasetFromPaths(Sequence):
             S = self.grid_size
             grid_cell_size = self.img_size // S
             
-            # Output: [S, S, 5+num_classes] for each grid cell: [x, y, w, h, objectness, class_probs]
-            y = np.zeros((S, S, 5 + self.num_classes))
+            # Output: [S, S, num_anchors, 5+num_classes] for each grid cell: [x, y, w, h, objectness, class_probs]
+            y = np.zeros((S, S, self.num_anchors, 5 + self.num_classes))
             
             for label in labels:
                 class_id, x_min, y_min, x_max, y_max = label
@@ -282,14 +310,26 @@ class YOLODatasetFromPaths(Sequence):
                 w_cell = width * S
                 h_cell = height * S
                 
-                # Only one prediction per grid cell for simplicity
-                if y[grid_y, grid_x, 4] == 0:  # If no object already assigned
-                    y[grid_y, grid_x, 0] = x_cell
-                    y[grid_y, grid_x, 1] = y_cell
-                    y[grid_y, grid_x, 2] = w_cell
-                    y[grid_y, grid_x, 3] = h_cell
-                    y[grid_y, grid_x, 4] = 1.0  # objectness
-                    y[grid_y, grid_x, 5 + class_id] = 1.0  # class probability
+                # Tính IoU giữa ground truth box và các anchor boxes
+                gt_box_shape = np.array([0, 0, width * S, height * S])
+                anchor_shapes = np.concatenate([np.zeros((self.num_anchors, 2)), self.anchors], axis=-1)
+                ious = iou(gt_box_shape, anchor_shapes)
+                best_anchor_index = np.argmax(ious)
+
+                # Gán thông tin vào anchor chịu trách nhiệm
+                if y[grid_y, grid_x, best_anchor_index, 4] == 0:
+                    x_cell = x_center * S - grid_x
+                    y_cell = y_center * S - grid_y
+                    anchor_w, anchor_h = self.anchors[best_anchor_index]
+                    w_rel = np.log((width * S / anchor_w) + 1e-9)
+                    h_rel = np.log((height * S / anchor_h) + 1e-9)
+
+                    y[grid_y, grid_x, best_anchor_index, 0] = x_cell
+                    y[grid_y, grid_x, best_anchor_index, 1] = y_cell
+                    y[grid_y, grid_x, best_anchor_index, 2] = w_rel
+                    y[grid_y, grid_x, best_anchor_index, 3] = h_rel
+                    y[grid_y, grid_x, best_anchor_index, 4] = 1.0
+                    y[grid_y, grid_x, best_anchor_index, 5 + class_id] = 1.0
             
             batch_x.append(img)
             batch_y.append(y)
@@ -297,31 +337,38 @@ class YOLODatasetFromPaths(Sequence):
         # Nếu batch rỗng, tạo dummy data
         if len(batch_x) == 0:
             dummy_img = np.zeros((self.img_size, self.img_size, 3), dtype=np.float32)
-            dummy_y = np.zeros((self.grid_size, self.grid_size, 5 + self.num_classes), dtype=np.float32)
+            dummy_y = np.zeros((self.grid_size, self.grid_size, self.num_anchors, 5 + self.num_classes), dtype=np.float32)
             batch_x = [dummy_img]
             batch_y = [dummy_y]
             print("Warning: Empty batch, using dummy data")
         
         return np.array(batch_x), np.array(batch_y)
 
-def get_data_loaders(data_path, img_size=64, grid_size=8, batch_size=16):
+def get_data_loaders(data_path, img_size=64, grid_size=8, batch_size=16, anchors=ANCHORS, num_anchors=NUM_ANCHORS):
     """Create data loaders for training and validation"""
-    print(f"Tạo data loader với kích thước ảnh {img_size}x{img_size}, grid_size={grid_size}")
-    
+    print(f"Tạo data loader với kích thước ảnh {img_size}x{img_size}, grid_size={grid_size}, num_anchors={num_anchors}")
+
     train_dataset = YOLODataset(
         os.path.join(data_path, 'train'),
         img_size=img_size,
         grid_size=grid_size,
         batch_size=batch_size,
+        anchors=anchors,
+        num_anchors=num_anchors,
         augment=True
     )
-    
+
     val_dataset = YOLODataset(
         os.path.join(data_path, 'val'),
         img_size=img_size,
         grid_size=grid_size,
         batch_size=batch_size,
+        anchors=anchors,
+        num_anchors=num_anchors,
         augment=False
     )
-    
-    return train_dataset, val_dataset, train_dataset.num_classes 
+
+    # Lấy num_classes từ train_dataset sau khi khởi tạo
+    num_classes = train_dataset.num_classes
+
+    return train_dataset, val_dataset, num_classes

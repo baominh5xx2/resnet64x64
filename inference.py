@@ -1,11 +1,13 @@
 import os
 import argparse
+import cv2
 import numpy as np
 import tensorflow as tf
-import cv2
+import yaml # Sử dụng yaml để đọc info
 import matplotlib.pyplot as plt
 
-from utils import process_predictions, draw_boxes
+# Import các hàm cần thiết và ANCHORS mặc định
+from utils import process_predictions, draw_boxes, ANCHORS, NUM_ANCHORS
 
 def load_model(model_path):
     """Load the trained detection model"""
@@ -60,13 +62,33 @@ def run_inference(model, image_path, class_names=None, img_size=64, grid_size=8,
     # Run prediction
     predictions = model.predict(input_data)
     
+    # Load anchors từ model info hoặc dùng mặc định (cần thêm logic này nếu chưa có)
+    # Ví dụ đơn giản dùng ANCHORS mặc định nếu không đọc từ info
+    try:
+        # Cố gắng đọc từ model info nếu có
+        info_path = model_path.replace('.keras', '_info.json')
+        if os.path.exists(info_path):
+             with open(info_path, 'r') as f:
+                model_info = yaml.safe_load(f)
+             loaded_anchors = np.array(model_info['anchors'])
+             loaded_num_anchors = model_info['num_anchors']
+        else:
+             loaded_anchors = ANCHORS
+             loaded_num_anchors = NUM_ANCHORS
+    except:
+        print("Warning: Could not load anchors from info, using defaults.")
+        loaded_anchors = ANCHORS
+        loaded_num_anchors = NUM_ANCHORS
+
     # Process predictions
     all_boxes, all_scores, all_classes = process_predictions(
         predictions, 
         grid_size=grid_size,
         confidence_threshold=confidence_threshold,
         nms_threshold=0.5,
-        num_classes=num_classes
+        num_classes=num_classes,
+        anchors=loaded_anchors,      # Thêm anchors
+        num_anchors=loaded_num_anchors # Thêm num_anchors
     )
     
     # Get boxes, scores and classes for the first (and only) image
@@ -194,4 +216,4 @@ if __name__ == '__main__':
             grid_size=args.grid_size,
             confidence_threshold=args.confidence,
             output_dir=args.output_dir
-        ) 
+        )

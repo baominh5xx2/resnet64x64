@@ -1,216 +1,200 @@
 import tensorflow as tf
 from tensorflow.keras import layers, models
 from resnet import ResNetBlock, ResNetBuilder
+# Import ANCHORS và NUM_ANCHORS từ utils
+from utils import ANCHORS, NUM_ANCHORS
 
 class ResNetYOLODetection:
-    def __init__(self, input_shape=(64, 64, 3), grid_size=8, num_classes=1, activation='swish', dropout_rate=0.25):
+    # Thêm num_anchors và anchors vào init
+    def __init__(self, input_shape=(64, 64, 3), grid_size=8, num_classes=1, num_anchors=NUM_ANCHORS, anchors=ANCHORS, activation='swish', dropout_rate=0.25):
         self.input_shape = input_shape
         self.grid_size = grid_size
         self.num_classes = num_classes
+        self.num_anchors = num_anchors # Lưu số lượng anchors
+        self.anchors = tf.constant(anchors, dtype=tf.float32) # Lưu anchors dưới dạng tensor
         self.activation = activation
         self.dropout_rate = dropout_rate
-        
-        # Total output dimensions per grid cell: 
-        # 4 for bounding box (x, y, w, h)
-        # 1 for objectness score
-        # num_classes for class probabilities
-        self.output_dims = 5 + num_classes
-        
-        # Calculate needed downsampling to reach required grid size
-        self.downsample_factor = self.input_shape[0] // self.grid_size
-        print(f"Input shape: {self.input_shape}, Grid size: {self.grid_size}, Downsample factor: {self.downsample_factor}")
-    
+
+        # Output dimensions per anchor: 5 + num_classes (xywh, obj, class_probs)
+        self.output_dims_per_anchor = 5 + self.num_classes
+        # Total output dimensions per grid cell
+        self.output_dims = self.num_anchors * self.output_dims_per_anchor
+
+        # Calculate downsample factor needed
+        self.downsample_factor = input_shape[0] // grid_size
+        if input_shape[0] % grid_size != 0:
+            print(f"Warning: input_shape[0] ({input_shape[0]}) not divisible by grid_size ({grid_size}). Feature map size might not match.")
+
     def build(self):
-        # Use the ResNetBuilder for the backbone with modified output
-        resnet_backbone = ResNetBuilder(
-            input_shape=self.input_shape,
-            num_classes=self.num_classes,  # This will be ignored as we'll modify the output
-            activation=self.activation, 
-            dropout_rate=self.dropout_rate
-        )
-        
-        # Start with the backbone but don't use its output layer
         inputs = layers.Input(shape=self.input_shape)
-        
-        # Efficient initial layer for small images
-        x = layers.DepthwiseConv2D(kernel_size=3, strides=1, padding='same')(inputs)
-        x = layers.Conv2D(32, kernel_size=1, strides=1, padding='same')(x)
+
+        # Backbone (ResNet)
+        # Initial Conv
+        x = layers.Conv2D(64, kernel_size=3, strides=1, padding='same', activation=self.activation)(inputs)
         x = layers.BatchNormalization()(x)
-        x = layers.Activation(self.activation)(x)
-        
-        # Print current size
-        print(f"After initial layer: {x.shape}")
-        
-        # Tính toán số lần cần downsample để đạt được kích thước grid
-        # Ví dụ: từ 64x64 -> 8x8 cần 3 lần downsample (stride=2)
-        # Với 320x320 -> 8x8 cần 4-5 lần
-        
-        # Residual blocks với downsampling được điều chỉnh theo kích thước đầu vào
-        # Đổi block đầu tiên từ downsample=False thành downsample=True để tạo projection kênh từ 32->64
-        x = ResNetBlock(64, downsample=True, activation=self.activation, dropout_rate=self.dropout_rate)(x)
-        print(f"After ResNet block 1: {x.shape}")
-        
-        # Block thứ hai giữ nguyên kích thước
-        x = ResNetBlock(64, downsample=False, activation=self.activation, dropout_rate=self.dropout_rate)(x)
-        print(f"After ResNet block 2: {x.shape}")
-        
-        # Bắt đầu áp dụng downsample để giảm kích thước
-        # Tính toán số lần downsample còn lại để đạt được grid_size
-        current_size = self.input_shape[0]  # Ban đầu là 64 hoặc 320
-        downsamples_needed = 0
-        
-        while current_size > self.grid_size:
-            current_size = current_size // 2
-            downsamples_needed += 1
-        
-        # Đã dùng 1 lần downsample ở block đầu
-        downsamples_needed = max(0, downsamples_needed - 1)
-        print(f"Downsamples needed: {downsamples_needed}")
-        
-        # Áp dụng các lần downsample còn lại
-        filters = 128
+
+        # ResNet Blocks
+        downsamples_needed = int(tf.math.log(float(self.downsample_factor)) / tf.math.log(2.0))
+        num_filters = 64
         for i in range(downsamples_needed):
-            x = ResNetBlock(filters, downsample=True, activation=self.activation, dropout_rate=self.dropout_rate)(x)
-            print(f"After ResNet block {i+3}: {x.shape}")
-            filters = min(512, filters * 2)  # Tăng số filter, tối đa là 512
-        
-        # Kiểm tra kích thước đầu ra
-        current_shape = x.shape[1]  # Lấy kích thước height
-        if current_shape != self.grid_size:
-            print(f"WARNING: Current output shape {current_shape} doesn't match desired grid size {self.grid_size}")
-            # Áp dụng thêm upsampling hoặc pooling nếu cần
-            if current_shape < self.grid_size:
-                # Upsampling nếu output quá nhỏ
-                scale_factor = self.grid_size // current_shape
-                x = layers.UpSampling2D(size=(scale_factor, scale_factor))(x)
-                print(f"Applied upsampling: {x.shape}")
-            elif current_shape > self.grid_size:
-                # Downsampling nếu output quá lớn
-                pool_size = current_shape // self.grid_size
-                x = layers.AveragePooling2D(pool_size=(pool_size, pool_size))(x)
-                print(f"Applied pooling: {x.shape}")
-        
-        # Detection head - predict bounding boxes, objectness and class probabilities
+            x = ResNetBlock(num_filters, downsample=True, activation=self.activation, dropout_rate=self.dropout_rate)(x)
+            num_filters *= 2
+        # Add a few more blocks without downsampling
+        for _ in range(2): # Add more blocks if needed for deeper features
+             x = ResNetBlock(num_filters, downsample=False, activation=self.activation, dropout_rate=self.dropout_rate)(x)
+
+        # --- Feature map size check and adjustment ---
+        current_grid_size = self.input_shape[0] // (2**downsamples_needed)
+        if current_grid_size > self.grid_size:
+            pool_factor = current_grid_size // self.grid_size
+            print(f"Downsampling further with AveragePooling2D by factor {pool_factor}")
+            x = layers.AveragePooling2D(pool_size=pool_factor, strides=pool_factor, padding='same')(x)
+        elif current_grid_size < self.grid_size:
+            upsample_factor = self.grid_size // current_grid_size
+            print(f"Upsampling features with UpSampling2D by factor {upsample_factor}")
+            x = layers.UpSampling2D(size=upsample_factor, interpolation='bilinear')(x)
+        # ---------------------------------------------
+
+        # Detection head
         x = layers.Conv2D(512, kernel_size=3, padding='same', activation=self.activation)(x)
         x = layers.BatchNormalization()(x)
-        x = layers.Dropout(0.3)(x)  # Thêm dropout
-        
+        x = layers.Dropout(0.4)(x) # Increased dropout before final layer
+
+        # Lớp Conv cuối cùng với số kênh mới
         raw_detection_output = layers.Conv2D(
-            self.output_dims,
+            self.output_dims, # Số kênh mới = num_anchors * (5 + num_classes)
             kernel_size=1,
-            activation=None,
+            activation=None, # Linear activation
             padding='same',
-            kernel_regularizer=tf.keras.regularizers.l2(0.005),  # Thêm L2 regularization
+            kernel_regularizer=tf.keras.regularizers.l2(0.005), # L2 regularization
             name='raw_detection_output'
         )(x)
 
-        print(f"Raw output shape: {raw_detection_output.shape}")
+        print(f"Raw output shape: {raw_detection_output.shape}") # Sẽ là (None, S, S, num_anchors * (5+C))
 
-        # Apply activations to different parts of the output using Lambda layers if needed
+        # Reshape output để tách chiều anchor
+        # Shape: (batch_size, grid_size, grid_size, num_anchors, 5 + num_classes)
+        reshaped_output = layers.Reshape(
+            (self.grid_size, self.grid_size, self.num_anchors, self.output_dims_per_anchor),
+            name='reshaped_output'
+        )(raw_detection_output)
+
+        print(f"Reshaped output shape: {reshaped_output.shape}")
+
+        # Apply activations to different parts of the prediction
         # Box coordinates (x, y) -> sigmoid [0, 1] relative to cell
-        pred_xy = layers.Activation('sigmoid', name='pred_xy')(raw_detection_output[..., 0:2])
-        # Box dimensions (w, h) -> linear (or exp for positivity, but linear is simpler with MSE)
-        pred_wh = layers.Lambda(lambda x: x, name='pred_wh')(raw_detection_output[..., 2:4])
+        pred_xy = layers.Activation('sigmoid', name='pred_xy')(reshaped_output[..., 0:2])
+        # Box dimensions (w, h) -> linear (sẽ được xử lý bằng exp trong loss/postprocess)
+        # No activation here, raw output represents log(w/anchor_w), log(h/anchor_h)
+        pred_wh = layers.Lambda(lambda t: t, name='pred_wh')(reshaped_output[..., 2:4])
         # Objectness score -> sigmoid [0, 1] probability
-        pred_obj = layers.Activation('sigmoid', name='pred_obj')(raw_detection_output[..., 4:5])
-        # Class probabilities -> softmax across classes
-        pred_class = layers.Activation('softmax', name='pred_class')(raw_detection_output[..., 5:])
+        pred_obj = layers.Activation('sigmoid', name='pred_obj')(reshaped_output[..., 4:5])
+        # Class probabilities -> sigmoid (cho phép multi-label hoặc đơn giản hơn)
+        pred_class = layers.Activation('sigmoid', name='pred_class')(reshaped_output[..., 5:])
 
-        # IMPORTANT: Use Concatenate layer from Keras instead of tf.concat
+        # Ghép nối lại output đã được activate
         detection_output = layers.Concatenate(axis=-1, name='detection_output')([
             pred_xy, pred_wh, pred_obj, pred_class
         ])
 
-        print(f"Final activated output shape: {detection_output.shape}")
+        print(f"Final activated output shape: {detection_output.shape}") # Sẽ là (None, S, S, num_anchors, 5+C)
 
-        # Create model
         model = models.Model(inputs, detection_output)
         return model
 
-def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
-    """Convenience function to build and compile the detection model"""
+# Hàm loss mới
+def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1, num_anchors=NUM_ANCHORS, anchors=ANCHORS, learning_rate=0.001):
+    """Convenience function to build and compile the detection model with anchors"""
     model_builder = ResNetYOLODetection(
         input_shape=input_shape,
         grid_size=grid_size,
-        num_classes=num_classes
+        num_classes=num_classes,
+        num_anchors=num_anchors,
+        anchors=anchors
     )
-    
+
     model = model_builder.build()
-    
-    # Custom loss function for object detection
-    def detection_loss(y_true, y_pred):
-        # Debugging info - chỉ in khi chạy lần đầu
-        if not hasattr(detection_loss, 'shape_printed'):
-            print(f"y_true shape: {y_true.shape}")
-            print(f"y_pred shape: {y_pred.shape}")
-            detection_loss.shape_printed = True
-        
-        # Extract components from prediction tensors
-        # y_true and y_pred shapes: [batch, grid_size, grid_size, 5+num_classes]
-        
-        # Box coordinates and dimensions
-        pred_xy = y_pred[..., 0:2]
-        pred_wh = y_pred[..., 2:4]
-        
+
+    # Lấy anchors và grid_size để dùng trong hàm loss
+    _anchors = tf.constant(anchors, dtype=tf.float32)
+    _grid_size = grid_size
+    _num_classes = num_classes
+    _ignore_thresh = 0.5 # Ngưỡng IoU để bỏ qua anchor khi tính no_obj_loss
+
+    # Custom loss function for object detection with anchors
+    @tf.function # Thêm tf.function để tối ưu hóa
+    def detection_loss_with_anchors(y_true, y_pred):
+        # y_true, y_pred shape: [batch, grid_size, grid_size, num_anchors, 5+num_classes]
+
+        # Mask để xác định anchor nào chịu trách nhiệm cho object (objectness = 1 trong y_true)
+        obj_mask = y_true[..., 4:5] # Shape: [batch, S, S, num_anchors, 1]
+        # Mask cho background (objectness = 0)
+        no_obj_mask = 1.0 - obj_mask
+
+        # --- Coordinate Loss (chỉ tính cho anchor chịu trách nhiệm) ---
         true_xy = y_true[..., 0:2]
-        true_wh = y_true[..., 2:4]
-        
-        # Objectness scores (already sigmoid activated)
+        pred_xy = y_pred[..., 0:2]
+        # Sử dụng Binary Crossentropy cho xy loss (ổn định hơn MSE trong khoảng 0-1)
+        xy_loss = tf.reduce_sum(tf.keras.losses.binary_crossentropy(true_xy, pred_xy) * obj_mask)
+
+        true_wh_rel = y_true[..., 2:4] # w, h đã được mã hóa log trong dataset
+        pred_wh_rel = y_pred[..., 2:4]
+        # Sử dụng MSE loss cho wh loss (vì giá trị là log, không bị giới hạn)
+        # Scale loss để cân bằng với xy_loss (có thể điều chỉnh)
+        wh_loss = tf.reduce_sum(tf.square(true_wh_rel - pred_wh_rel) * obj_mask) * 0.5
+
+
+        # --- Objectness Loss ---
         pred_obj = y_pred[..., 4:5]
-        true_obj = y_true[..., 4:5]
-        
-        # Class probabilities (already softmax activated)
-        pred_class = y_pred[..., 5:]
+
+        # Loss cho anchor chịu trách nhiệm (target là 1)
+        obj_loss = tf.reduce_sum(tf.keras.losses.binary_crossentropy(obj_mask, pred_obj) * obj_mask)
+
+        # Loss cho background anchors (target là 0)
+        # Cần tính IoU giữa predicted box và true box để xác định anchor nào cần ignore
+        # (Phần này phức tạp, tạm thời dùng no_obj_mask đơn giản để đảm bảo chạy được)
+        # TODO: Implement ignore threshold based on IoU
+        no_obj_loss = tf.reduce_sum(tf.keras.losses.binary_crossentropy(obj_mask, pred_obj) * no_obj_mask)
+
+
+        # --- Class Loss (chỉ tính cho anchor chịu trách nhiệm) ---
         true_class = y_true[..., 5:]
-        
-        # Calculate coordinate loss (using mean squared error)
-        xy_loss = tf.reduce_sum(tf.square(true_xy - pred_xy) * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
-        wh_loss = tf.reduce_sum(tf.square(tf.sqrt(true_wh + 1e-6) - tf.sqrt(tf.abs(pred_wh) + 1e-6)) * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
-        
-        # Calculate objectness loss (binary cross-entropy)
-        obj_loss_raw = tf.keras.losses.binary_crossentropy(true_obj, pred_obj)
-        
-        # Expand dims để phù hợp với kích thước của true_obj
-        obj_loss_raw = tf.expand_dims(obj_loss_raw, axis=-1)  # Shape: [batch, grid, grid, 1]
-        
-        # Giờ phép nhân sẽ hoạt động đúng
-        obj_loss = tf.reduce_sum(obj_loss_raw * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
-        
-        # Penalize background predictions more
-        no_obj_mask = 1.0 - true_obj  # Shape: [batch, grid, grid, 1]
-        
-        # Tương tự cho no_obj_loss_raw
-        no_obj_loss_raw_expanded = tf.expand_dims(tf.keras.losses.binary_crossentropy(true_obj, pred_obj), axis=-1)
-        no_obj_loss_raw = no_obj_loss_raw_expanded * no_obj_mask
-        no_obj_loss = tf.reduce_sum(no_obj_loss_raw) / tf.maximum(tf.reduce_sum(no_obj_mask), 1.0)
-        
-        # Sửa lỗi class loss - đảm bảo kích thước tương thích
-        # Tính categorical_crossentropy giữa true_class và pred_class
-        class_loss_per_cell = tf.keras.losses.categorical_crossentropy(true_class, pred_class)  # Shape: [batch, grid, grid]
-        
-        # Chuyển class_loss_per_cell thành [batch, grid, grid, 1] để nhân với true_obj
-        class_loss_per_cell = tf.expand_dims(class_loss_per_cell, axis=-1)  # Shape: [batch, grid, grid, 1]
-        
-        # Nhân trực tiếp với true_obj (không cần squeeze)
-        class_loss = tf.reduce_sum(class_loss_per_cell * true_obj) / tf.maximum(tf.reduce_sum(true_obj), 1.0)
-        
-        # Total loss with weighting factors
+        pred_class = y_pred[..., 5:]
+        # Dùng binary_crossentropy vì đã dùng sigmoid activation cho class
+        class_loss = tf.reduce_sum(tf.keras.losses.binary_crossentropy(true_class, pred_class) * obj_mask)
+
+        # --- Tổng hợp Loss ---
+        # Chuẩn hóa loss bằng số lượng object hoặc batch size
+        num_objects = tf.maximum(tf.reduce_sum(obj_mask), 1.0) # Số lượng anchor chịu trách nhiệm
+        batch_size_f = tf.cast(tf.shape(y_true)[0], tf.float32)
+
+        # Chuẩn hóa bằng batch size để ổn định hơn khi số object thay đổi nhiều
+        xy_loss /= batch_size_f
+        wh_loss /= batch_size_f
+        obj_loss /= batch_size_f
+        no_obj_loss /= batch_size_f
+        class_loss /= batch_size_f
+
+        # Trọng số loss (có thể cần tinh chỉnh)
         lambda_coord = 5.0
         lambda_noobj = 0.5
         lambda_obj = 1.0
         lambda_class = 1.0
-        
+
         total_loss = (lambda_coord * (xy_loss + wh_loss) +
                       lambda_obj * obj_loss +
                       lambda_noobj * no_obj_loss +
                       lambda_class * class_loss)
-        
+
+        # Thêm regularization loss của model
+        total_loss += tf.reduce_sum(model.losses)
+
         return total_loss
-    
-    # Compile model with custom loss and metrics
+
+    # Compile model
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-        loss=detection_loss
+        optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+        loss=detection_loss_with_anchors
     )
-    
+
     return model

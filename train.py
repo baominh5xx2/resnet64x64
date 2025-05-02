@@ -12,99 +12,134 @@ from tqdm import tqdm # Import tqdm for progress bar
 from dataset import get_data_loaders, YOLODatasetFromPaths
 from detection_model import build_detection_model
 from utils import process_predictions, draw_boxes, plot_detection_results
+from utils import ANCHORS, NUM_ANCHORS, process_predictions, draw_boxes, plot_detection_results, iou
 
 class DetectionMetricsCallback(Callback):
     """Callback để tính toán và hiển thị AP và AR sau mỗi epoch trên toàn bộ validation set"""
-    def __init__(self, validation_data, grid_size, num_classes, iou_threshold=0.5, confidence_threshold=0.1, nms_threshold=0.5):
+    def __init__(self, validation_data, grid_size, num_classes, anchors=ANCHORS, num_anchors=NUM_ANCHORS, iou_threshold=0.5, confidence_threshold=0.1, nms_threshold=0.5, frequency=1):
         super().__init__()
         self.validation_data = validation_data
         self.grid_size = grid_size
         self.num_classes = num_classes
+        self.anchors = tf.constant(anchors, dtype=tf.float32) # Lưu anchors
+        self.num_anchors = num_anchors # Lưu num_anchors
         self.iou_threshold = iou_threshold
-        self.confidence_threshold = confidence_threshold # Thêm ngưỡng tin cậy cho xử lý dự đoán
-        self.nms_threshold = nms_threshold # Thêm ngưỡng NMS
+        self.confidence_threshold = confidence_threshold
+        self.nms_threshold = nms_threshold
+        self.frequency = frequency
         self.ap_history = []
         self.ar_history = []
+        self.last_ap = 0.0
+        self.last_ar = 0.0
 
     def on_epoch_end(self, epoch, logs=None):
-        print("\nCalculating validation metrics...")
-        all_true_boxes = []
-        all_true_classes = []
-        all_pred_boxes = []
-        all_pred_scores = []
-        all_pred_classes = []
+        logs = logs or {}
+        # Chỉ tính toán nếu epoch chia hết cho frequency
+        if (epoch + 1) % self.frequency == 0:
+            print(f"\nCalculating validation metrics for epoch {epoch+1}...")
+            all_true_boxes = []
+            all_true_classes = []
+            all_pred_boxes = []
+            all_pred_scores = []
+            all_pred_classes = []
 
-        # Lặp qua toàn bộ validation dataset
-        # Sử dụng tqdm để hiển thị thanh tiến trình
-        for batch_x, batch_y in tqdm(self.validation_data, desc="Validation Metrics"):
-            # Dự đoán trên batch hiện tại
-            predictions = self.model.predict(batch_x, verbose=0) # Tắt verbose của predict
+            # Lặp qua toàn bộ validation dataset
+            for batch_x, batch_y in tqdm(self.validation_data, desc="Validation Metrics"):
+                # Dự đoán trên batch hiện tại
+                predictions = self.model.predict(batch_x, verbose=0)
 
-            # Xử lý dự đoán cho batch này (áp dụng confidence threshold và NMS)
-            batch_pred_boxes, batch_pred_scores, batch_pred_classes = process_predictions(
-                predictions,
-                grid_size=self.grid_size,
-                confidence_threshold=self.confidence_threshold,
-                nms_threshold=self.nms_threshold,
-                num_classes=self.num_classes
+                # Xử lý dự đoán cho batch này (áp dụng confidence threshold và NMS)
+                # Truyền anchors và num_anchors vào process_predictions
+                batch_pred_boxes, batch_pred_scores, batch_pred_classes = process_predictions(
+                    predictions,
+                    grid_size=self.grid_size,
+                    confidence_threshold=self.confidence_threshold,
+                    nms_threshold=self.nms_threshold,
+                    num_classes=self.num_classes,
+                    anchors=self.anchors.numpy(), # Truyền anchors (numpy array)
+                    num_anchors=self.num_anchors  # Truyền num_anchors
+                )
+
+                # Trích xuất ground truth cho batch này (đã cập nhật)
+                batch_true_boxes, batch_true_classes = self._extract_true_boxes_batch(batch_y)
+
+                # Lưu kết quả của batch
+                all_true_boxes.extend(batch_true_boxes)
+                all_true_classes.extend(batch_true_classes)
+                all_pred_boxes.extend(batch_pred_boxes)
+                all_pred_scores.extend(batch_pred_scores)
+                all_pred_classes.extend(batch_pred_classes)
+
+            # Tính toán AP và AR tổng thể trên toàn bộ dataset
+            ap, ar = self.calculate_mean_ap_ar(
+                all_true_boxes, all_true_classes,
+                all_pred_boxes, all_pred_scores, all_pred_classes
             )
 
-            # Trích xuất ground truth cho batch này
-            batch_true_boxes, batch_true_classes = self._extract_true_boxes_batch(batch_y)
+            # Lưu giá trị mới nhất
+            self.last_ap = ap
+            self.last_ar = ar
 
-            # Lưu kết quả của batch
-            all_true_boxes.extend(batch_true_boxes)
-            all_true_classes.extend(batch_true_classes)
-            all_pred_boxes.extend(batch_pred_boxes)
-            all_pred_scores.extend(batch_pred_scores)
-            all_pred_classes.extend(batch_pred_classes)
+            # Thêm vào lịch sử
+            self.ap_history.append(ap)
+            self.ar_history.append(ar)
 
-        # Tính toán AP và AR tổng thể trên toàn bộ dataset
-        ap, ar = self.calculate_mean_ap_ar(
-            all_true_boxes, all_true_classes,
-            all_pred_boxes, all_pred_scores, all_pred_classes
-        )
-
-        # Thêm vào lịch sử
-        self.ap_history.append(ap)
-        self.ar_history.append(ar)
-
-        # Thêm vào logs
-        logs = logs or {}
-        logs['val_AP'] = ap
-        logs['val_AR'] = ar
-
-        # Hiển thị (Keras sẽ tự động hiển thị từ logs)
-        # print(f" - val_AP: {ap:.4f} - val_AR: {ar:.4f}") # Không cần in ở đây nữa
+            # Thêm vào logs
+            logs['val_AP'] = ap
+            logs['val_AR'] = ar
+            print(f"Epoch {epoch+1}: val_AP: {ap:.4f} - val_AR: {ar:.4f}")
+        else:
+             # Sử dụng lại giá trị gần nhất cho các epoch không tính toán
+             logs['val_AP'] = self.last_ap
+             logs['val_AR'] = self.last_ar
 
     def _extract_true_boxes_batch(self, batch_y):
-        """Trích xuất ground truth boxes và classes từ một batch target"""
+        """Trích xuất ground truth boxes và classes từ batch target với anchor"""
         batch_true_boxes = []
         batch_true_classes = []
-        for y_true in batch_y:
+        S = self.grid_size
+        # Chuyển anchors sang numpy để dễ truy cập
+        anchors_np = self.anchors.numpy()
+
+        for y_true in batch_y: # y_true shape: [S, S, num_anchors, 5+C]
             true_boxes_img = []
             true_classes_img = []
-            for row in range(self.grid_size):
-                for col in range(self.grid_size):
-                    if y_true[row, col, 4] > 0:  # Nếu có object
-                        x_cell, y_cell, w_cell, h_cell = y_true[row, col, 0:4]
-                        x_center = (col + x_cell) / self.grid_size
-                        y_center = (row + y_cell) / self.grid_size
-                        w = w_cell / self.grid_size
-                        h = h_cell / self.grid_size
-                        x_min = max(0, x_center - w/2)
-                        y_min = max(0, y_center - h/2)
-                        x_max = min(1, x_center + w/2)
-                        y_max = min(1, y_center + h/2)
-                        class_id = np.argmax(y_true[row, col, 5:5+self.num_classes])
-                        true_boxes_img.append([x_min, y_min, x_max, y_max])
-                        true_classes_img.append(class_id)
+            for row in range(S):
+                for col in range(S):
+                    for anchor_idx in range(self.num_anchors):
+                        if y_true[row, col, anchor_idx, 4] > 0.5:  # Nếu anchor này chịu trách nhiệm (objectness > 0.5)
+                            x_cell = y_true[row, col, anchor_idx, 0]
+                            y_cell = y_true[row, col, anchor_idx, 1]
+                            w_rel = y_true[row, col, anchor_idx, 2] # log encoded
+                            h_rel = y_true[row, col, anchor_idx, 3] # log encoded
+                            class_id = np.argmax(y_true[row, col, anchor_idx, 5:])
+
+                            # Decode coordinates (relative to image)
+                            x_center = (col + x_cell) / S
+                            y_center = (row + y_cell) / S
+
+                            # Decode dimensions (relative to image)
+                            anchor_w, anchor_h = anchors_np[anchor_idx]
+                            w = (np.exp(w_rel) * anchor_w) / S
+                            h = (np.exp(h_rel) * anchor_h) / S
+
+                            # Convert to [x_min, y_min, x_max, y_max]
+                            x_min = max(0.0, x_center - w/2)
+                            y_min = max(0.0, y_center - h/2)
+                            x_max = min(1.0, x_center + w/2)
+                            y_max = min(1.0, y_center + h/2)
+
+                            true_boxes_img.append([x_min, y_min, x_max, y_max])
+                            true_classes_img.append(class_id)
+
             batch_true_boxes.append(np.array(true_boxes_img) if true_boxes_img else np.zeros((0, 4)))
-            batch_true_classes.append(np.array(true_classes_img) if true_classes_img else np.array([]))
+            batch_true_classes.append(np.array(true_classes_img, dtype=int) if true_classes_img else np.array([], dtype=int))
         return batch_true_boxes, batch_true_classes
 
     def calculate_mean_ap_ar(self, all_true_boxes, all_true_classes, all_pred_boxes, all_pred_scores, all_pred_classes):
         """Tính toán mAP và mAR trên toàn bộ dataset"""
+        # ... (Logic tính AP/AR giữ nguyên như trước, vì nó hoạt động trên box đã decode) ...
+        # Chỉ cần đảm bảo đầu vào (all_true_boxes, all_pred_boxes, ...) là đúng định dạng
         all_scores_list = []
         all_tp_fp_list = [] # 1 for TP, 0 for FP
         total_num_gt = 0
@@ -121,27 +156,33 @@ class DetectionMetricsCallback(Callback):
             num_gt = len(true_boxes)
             total_num_gt += num_gt
 
-            if num_gt == 0 or len(pred_boxes) == 0:
-                # Nếu không có GT hoặc không có dự đoán, thêm FP cho các dự đoán (nếu có)
+            if num_gt == 0:
+                # Nếu không có GT, tất cả dự đoán là FP
                 for score in pred_scores:
                     all_scores_list.append(score)
                     all_tp_fp_list.append(0) # FP
                 continue
 
+            if len(pred_boxes) == 0:
+                # Nếu không có dự đoán, không có TP/FP nào được thêm
+                continue
+
             gt_used = np.zeros(num_gt, dtype=bool)
 
-            # Sắp xếp dự đoán theo điểm số giảm dần
-            order = np.argsort(-pred_scores)
-            pred_boxes = pred_boxes[order]
-            pred_scores = pred_scores[order]
-            pred_classes = pred_classes[order]
+            # Sắp xếp dự đoán theo điểm số giảm dần (đã được thực hiện trong process_predictions? Kiểm tra lại)
+            # Nếu process_predictions chưa sắp xếp, cần sắp xếp ở đây:
+            # order = np.argsort(-pred_scores)
+            # pred_boxes = pred_boxes[order]
+            # pred_scores = pred_scores[order]
+            # pred_classes = pred_classes[order]
 
-            # Tính IoU matrix
+            # Tính IoU matrix (pred_boxes vs true_boxes)
+            # Format: [x_min, y_min, x_max, y_max]
             iou_matrix = self.calculate_iou_matrix(pred_boxes, true_boxes)
 
             # Xác định TP/FP cho từng dự đoán
             for j in range(len(pred_boxes)):
-                pred_class = pred_classes[j]
+                pred_class = int(pred_classes[j])
                 pred_score = pred_scores[j]
 
                 # Tìm các GT cùng lớp
@@ -177,7 +218,7 @@ class DetectionMetricsCallback(Callback):
         cum_tp = np.cumsum(tp_fp_array)
         cum_fp = np.cumsum(1 - tp_fp_array)
 
-        recall = cum_tp / total_num_gt if total_num_gt > 0 else np.zeros_like(cum_tp)
+        recall = cum_tp / total_num_gt if total_num_gt > 0 else np.zeros_like(cum_tp, dtype=float)
         precision = cum_tp / (cum_tp + cum_fp + 1e-9) # Thêm epsilon để tránh chia cho 0
 
         ap = self.calculate_ap_from_precision_recall(precision, recall)
@@ -185,84 +226,60 @@ class DetectionMetricsCallback(Callback):
 
         return ap, ar
 
-    # --- Các hàm calculate_iou_matrix và calculate_ap_from_precision_recall giữ nguyên ---
     def calculate_iou_matrix(self, boxes1, boxes2):
-        """Tính ma trận IoU giữa hai tập hợp boxes"""
-        # ... (giữ nguyên code gốc) ...
-        # Xử lý trường hợp mảng rỗng
+        """Tính ma trận IoU giữa hai tập hợp boxes [x_min, y_min, x_max, y_max]"""
         if len(boxes1) == 0 or len(boxes2) == 0:
             return np.zeros((len(boxes1), len(boxes2)))
 
-        # Khởi tạo ma trận IoU
-        iou_matrix = np.zeros((len(boxes1), len(boxes2)))
+        # Mở rộng boxes để tính toán broadcast
+        boxes1 = np.expand_dims(boxes1, axis=1) # Shape: [N, 1, 4]
+        boxes2 = np.expand_dims(boxes2, axis=0) # Shape: [1, M, 4]
 
-        # Tính IoU cho từng cặp boxes
-        for i, box1 in enumerate(boxes1):
-            for j, box2 in enumerate(boxes2):
-                # Tính phần giao
-                x1 = max(box1[0], box2[0])
-                y1 = max(box1[1], box2[1])
-                x2 = min(box1[2], box2[2])
-                y2 = min(box1[3], box2[3])
+        # Tính toán phần giao nhau (intersection)
+        intersect_mins = np.maximum(boxes1[..., :2], boxes2[..., :2])
+        intersect_maxs = np.minimum(boxes1[..., 2:], boxes2[..., 2:])
+        intersect_wh = np.maximum(intersect_maxs - intersect_mins, 0.)
+        intersect_area = intersect_wh[..., 0] * intersect_wh[..., 1]
 
-                # Diện tích phần giao
-                inter_area = max(0, x2 - x1) * max(0, y2 - y1)
+        # Tính toán diện tích của từng box
+        area1 = (boxes1[..., 2] - boxes1[..., 0]) * (boxes1[..., 3] - boxes1[..., 1])
+        area2 = (boxes2[..., 2] - boxes2[..., 0]) * (boxes2[..., 3] - boxes2[..., 1])
 
-                # Diện tích của từng box
-                box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
-                box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+        # Tính toán phần hợp (union)
+        union_area = area1 + area2 - intersect_area
 
-                # Diện tích phần hợp
-                union_area = box1_area + box2_area - inter_area
-
-                # IoU
-                iou_matrix[i, j] = inter_area / union_area if union_area > 0 else 0
+        # Tính IoU, tránh chia cho 0
+        iou_matrix = intersect_area / (union_area + 1e-9)
 
         return iou_matrix
 
-
     def calculate_ap_from_precision_recall(self, precision, recall):
-        """Tính AP từ precision và recall bằng phương pháp AUC"""
-        # ... (giữ nguyên code gốc) ...
-        # Thêm điểm đầu và cuối
+        """Tính AP từ precision và recall bằng phương pháp AUC (Average Precision)"""
+        # Thêm điểm đầu và cuối để đảm bảo bao phủ toàn bộ recall range [0, 1]
         mrec = np.concatenate(([0.0], recall, [1.0]))
         mpre = np.concatenate(([0.0], precision, [0.0]))
 
-        # Làm mịn precision (đảm bảo precision không giảm)
+        # Làm mịn precision (đảm bảo precision không giảm khi recall tăng)
         for i in range(mpre.size - 1, 0, -1):
             mpre[i-1] = np.maximum(mpre[i-1], mpre[i])
 
-        # Tìm các điểm mà recall thay đổi
+        # Tìm các điểm mà recall thay đổi (để tính diện tích các hình chữ nhật)
         i = np.where(mrec[1:] != mrec[:-1])[0]
 
-        # Tính diện tích dưới đường cong precision-recall
+        # Tính diện tích dưới đường cong precision-recall (AUC)
+        # Sum( (recall[i+1] - recall[i]) * precision[i+1] )
         ap = np.sum((mrec[i+1] - mrec[i]) * mpre[i+1])
 
         return ap
 
-def save_model_with_info(model, save_path, grid_size, num_classes):
-    """Save model along with important info for prediction"""
-    # Đảm bảo đường dẫn kết thúc bằng .keras
-    if not save_path.endswith('.keras'):
-        save_path = os.path.splitext(save_path)[0] + '.keras'
-    
-    # Save model weights
-    model.save(save_path, save_format='keras')
-    
-    # Save additional info
-    info_path = os.path.splitext(save_path)[0] + '_info.json'
-    model_info = {
-        'grid_size': grid_size,
-        'num_classes': num_classes,
-        'input_shape': model.input_shape[1:],
-        'output_shape': model.output_shape[1:]
-    }
-    
-    with open(info_path, 'w') as f:
-        json.dump(model_info, f)
-    
-    print(f"Model saved to {save_path}")
-    print(f"Model info saved to {info_path}")
+def save_model_with_info(model, filepath, info):
+    """Save the Keras model and an accompanying JSON file with metadata."""
+    model.save(filepath)
+    info_filepath = filepath.replace('.keras', '_info.json')
+    with open(info_filepath, 'w') as f:
+        yaml.dump(info, f, indent=4)
+    print(f"Model saved to {filepath}")
+    print(f"Model info saved to {info_filepath}")
 
 def parse_yaml_data(yaml_path):
     """Parse YAML data file in YOLOv5 format"""
@@ -275,26 +292,24 @@ def parse_yaml_data(yaml_path):
 def train(args):
     """Train the detection model"""
     print("Loading dataset...")
-    
+    # Xác định anchors và num_anchors (có thể thêm vào args nếu muốn tùy chỉnh)
+    anchors = ANCHORS
+    num_anchors = NUM_ANCHORS
+
     # Kiểm tra xem data_path có phải là file yaml không
     if args.data_path.endswith('.yaml') or args.data_path.endswith('.yml'):
-        # Đọc file yaml
-        data_config = parse_yaml_data(args.data_path)
-        
-        # Lấy đường dẫn đến train.txt và val.txt
-        train_path = data_config.get('train', '')
-        val_path = data_config.get('val', '')
-        
-        # Lấy số lớp và tên lớp
-        num_classes = data_config.get('nc', 0)
-        class_names = data_config.get('names', [f'class_{i}' for i in range(num_classes)])
-        
-        print(f"Dataset config from YAML:")
-        print(f"  - Train path: {train_path}")
-        print(f"  - Val path: {val_path}")
-        print(f"  - Number of classes: {num_classes}")
-        
-        # Tạo dataset từ file paths
+        with open(args.data_path, 'r') as f:
+            data_config = yaml.safe_load(f)
+        train_path = os.path.join(os.path.dirname(args.data_path), data_config['train'])
+        val_path = os.path.join(os.path.dirname(args.data_path), data_config['val'])
+        num_classes = data_config['nc']
+        class_names = data_config['names']
+        print(f"Loaded dataset config from {args.data_path}")
+        print(f"Train path: {train_path}")
+        print(f"Validation path: {val_path}")
+        print(f"Number of classes: {num_classes}")
+
+        # Tạo dataset từ file paths, truyền anchors và num_anchors
         train_dataset = YOLODatasetFromPaths(
             train_path,
             img_size=args.img_size,
@@ -302,9 +317,10 @@ def train(args):
             batch_size=args.batch_size,
             num_classes=num_classes,
             class_names=class_names,
+            anchors=anchors, # Thêm
+            num_anchors=num_anchors, # Thêm
             augment=True
         )
-        
         val_dataset = YOLODatasetFromPaths(
             val_path,
             img_size=args.img_size,
@@ -312,240 +328,336 @@ def train(args):
             batch_size=args.batch_size,
             num_classes=num_classes,
             class_names=class_names,
+            anchors=anchors, # Thêm
+            num_anchors=num_anchors, # Thêm
             augment=False
         )
+        # Cập nhật lại grid_size nếu dataset tự điều chỉnh
+        args.grid_size = train_dataset.grid_size
     else:
-        # Sử dụng cách cũ nếu là đường dẫn thư mục
+        # Sử dụng cách cũ, truyền anchors và num_anchors
         train_dataset, val_dataset, num_classes = get_data_loaders(
             args.data_path,
             img_size=args.img_size,
             grid_size=args.grid_size,
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            anchors=anchors, # Thêm
+            num_anchors=num_anchors # Thêm
         )
         class_names = train_dataset.class_names if hasattr(train_dataset, 'class_names') else None
-    
-    print(f"Building model with {num_classes} classes...")
+        # Cập nhật lại grid_size nếu dataset tự điều chỉnh
+        args.grid_size = train_dataset.grid_size
+
+    print(f"Building model with {num_classes} classes, grid size {args.grid_size}, and {num_anchors} anchors...")
+    # Truyền anchors và num_anchors vào build_detection_model
     model = build_detection_model(
         input_shape=(args.img_size, args.img_size, 3),
         grid_size=args.grid_size,
-        num_classes=num_classes
+        num_classes=num_classes,
+        num_anchors=num_anchors, # Thêm
+        anchors=anchors,         # Thêm
+        learning_rate=args.learning_rate
     )
-    
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    # Setup callbacks
-    callbacks = [
-        ModelCheckpoint(
-            os.path.join(args.output_dir, 'model_best.keras'),
-            monitor='val_loss',
-            save_best_only=True,
-            mode='min',
-            verbose=1
-        ),
-        ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,
-            patience=5,
-            min_lr=1e-6,
-            verbose=1
-        ),
-        EarlyStopping(
-            monitor='val_loss',
-            patience=15,
-            verbose=1
-        ),
-        TensorBoard(
-            log_dir=os.path.join(args.output_dir, 'logs'),
-            write_graph=True,
-            update_freq='epoch'
-        ),
-        # Thêm callback để tính AP và AR - THAY ĐỔI TẠI ĐÂY
-        DetectionMetricsCallback(
-            validation_data=val_dataset,
-            grid_size=args.grid_size,
-            num_classes=num_classes,
-            iou_threshold=0.3,  # Thêm tham số này với giá trị 0.3
-            confidence_threshold=0.1, # Ngưỡng tin cậy để xử lý dự đoán
-            nms_threshold=0.5        # Ngưỡng NMS
-        )
-    ]
-    
-    # Display model summary
     model.summary()
-    
-    # Train the model
+
+    # Callbacks
+    log_dir = os.path.join("logs", args.run_name)
+    os.makedirs(log_dir, exist_ok=True)
+    checkpoint_path = os.path.join(log_dir, "best_model.keras")
+
+    # Cập nhật ModelCheckpoint để theo dõi val_AP hoặc val_loss
+    checkpoint = ModelCheckpoint(
+        checkpoint_path,
+        monitor='val_AP', # Theo dõi val_AP
+        save_best_only=True,
+        mode='max',      # Lưu model có val_AP cao nhất
+        verbose=1
+    )
+    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, min_lr=1e-6, verbose=1)
+    early_stopping = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True, verbose=1)
+    tensorboard = TensorBoard(log_dir=log_dir)
+
+    # Khởi tạo DetectionMetricsCallback với anchors và num_anchors
+    metrics_callback = DetectionMetricsCallback(
+        validation_data=val_dataset,
+        grid_size=args.grid_size,
+        num_classes=num_classes,
+        anchors=anchors, # Thêm
+        num_anchors=num_anchors, # Thêm
+        iou_threshold=0.5, # Ngưỡng IoU chuẩn cho mAP@0.5
+        confidence_threshold=0.1, # Ngưỡng tin cậy thấp để tính AP
+        nms_threshold=0.5, # Ngưỡng NMS khi xử lý dự đoán
+        frequency=args.metrics_freq # Tần suất tính metrics
+    )
+
+    callbacks = [checkpoint, reduce_lr, early_stopping, tensorboard, metrics_callback]
+
     print("Starting training...")
     history = model.fit(
         train_dataset,
-        validation_data=val_dataset,
         epochs=args.epochs,
+        validation_data=val_dataset,
         callbacks=callbacks,
-        verbose=1  # Chỉ hiển thị một thanh tiến trình cho mỗi epoch
+        verbose=1
     )
-    
-    # Save final model with info
-    final_model_path = os.path.join(args.output_dir, 'model_final.keras')
-    save_model_with_info(model, final_model_path, args.grid_size, num_classes)
-    
-    # Plot training history
-    plt.figure(figsize=(12, 5))
 
-    # Subplot 1: Loss
-    plt.subplot(1, 2, 1)
-    plt.plot(history.history['loss'], label='Train')
-    plt.plot(history.history['val_loss'], label='Validation')
-    plt.title('Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
+    print("Training finished.")
 
-    # Subplot 2: AP and AR
-    plt.subplot(1, 2, 2)
-    ap_history = [cb.ap_history for cb in callbacks if isinstance(cb, DetectionMetricsCallback)]
-    ar_history = [cb.ar_history for cb in callbacks if isinstance(cb, DetectionMetricsCallback)]
+    # Lưu model cuối cùng kèm thông tin
+    final_model_path = os.path.join(log_dir, "final_model.keras")
+    model_info = {
+        'img_size': args.img_size,
+        'grid_size': args.grid_size,
+        'num_classes': num_classes,
+        'class_names': class_names,
+        'anchors': anchors.tolist(), # Lưu anchors vào info
+        'num_anchors': num_anchors
+    }
+    save_model_with_info(model, final_model_path, model_info)
 
-    if ap_history and ar_history:
-        plt.plot(ap_history[0], label='AP')
-        plt.plot(ar_history[0], label='AR')
-        plt.title('Precision & Recall')
+    # Vẽ đồ thị loss và metrics (AP/AR)
+    try:
+        plt.figure(figsize=(12, 5))
+
+        # Loss plot
+        plt.subplot(1, 2, 1)
+        plt.plot(history.history['loss'], label='Training Loss')
+        plt.plot(history.history['val_loss'], label='Validation Loss')
+        plt.title('Model Loss')
         plt.xlabel('Epoch')
-        plt.ylabel('Metric Value')
+        plt.ylabel('Loss')
         plt.legend()
 
-    plt.tight_layout()
-    plt.savefig(os.path.join(args.output_dir, 'training_history.png'))
-    
-    return model, train_dataset, val_dataset, num_classes
+        # AP/AR plot
+        # Lấy history từ callback
+        ap_history = metrics_callback.ap_history
+        ar_history = metrics_callback.ar_history
+        epochs_calculated = range(args.metrics_freq -1, args.epochs, args.metrics_freq)
+        epochs_calculated = epochs_calculated[:len(ap_history)] # Đảm bảo số epoch khớp
 
-def evaluate(model, dataset, num_classes, grid_size=8, output_dir=None):
-    """Evaluate the model and visualize some predictions"""
-    print("Evaluating model...")
-    
-    # Get a batch of data for visualization
-    batch_x, batch_y = next(iter(dataset))
-    
-    # Make predictions
-    predictions = model.predict(batch_x)
-    
-    # Process predictions
-    all_boxes, all_scores, all_classes = process_predictions(
-        predictions, 
-        grid_size=grid_size,
-        confidence_threshold=0.3,
-        nms_threshold=0.5,
-        num_classes=num_classes
-    )
-    
-    # Visualize results
-    class_names = dataset.class_names if hasattr(dataset, 'class_names') else None
-    fig = plot_detection_results(
-        batch_x, all_boxes, all_scores, all_classes, 
-        class_names=class_names
-    )
-    
-    if output_dir:
-        plt.savefig(os.path.join(output_dir, 'detection_results.png'))
-    
-    # Show individual images with detections
-    for i in range(min(5, len(batch_x))):
-        image = batch_x[i]
-        boxes = all_boxes[i]
-        scores = all_scores[i]
-        class_ids = all_classes[i]
-        
-        # Draw bounding boxes on the image
-        result_img = draw_boxes(
-            image, boxes, scores, class_ids, 
-            class_names=class_names
+        if ap_history and ar_history:
+            plt.subplot(1, 2, 2)
+            plt.plot(epochs_calculated, ap_history, label='Validation AP@0.5', marker='o')
+            plt.plot(epochs_calculated, ar_history, label='Validation AR@0.5', marker='x')
+            plt.title('Validation AP & AR')
+            plt.xlabel('Epoch')
+            plt.ylabel('Metric Value')
+            plt.legend()
+            plt.ylim(0, 1)
+
+        plt.tight_layout()
+        plot_path = os.path.join(log_dir, "training_plots.png")
+        plt.savefig(plot_path)
+        print(f"Training plots saved to {plot_path}")
+        # plt.show()
+    except Exception as e:
+        print(f"Error plotting training history: {e}")
+
+def evaluate(model_path, data_path, img_size=64, grid_size=8, batch_size=4):
+    """Evaluate the model on a few validation images and plot results."""
+    print(f"Loading model from {model_path}...")
+    model = tf.keras.models.load_model(model_path, compile=False) # Không cần compile lại loss
+
+    # Load model info
+    info_path = model_path.replace('.keras', '_info.json')
+    if not os.path.exists(info_path):
+        print(f"Error: Model info file not found at {info_path}")
+        # Fallback hoặc lấy thông tin từ model nếu có thể
+        try:
+            img_size = model.input_shape[1]
+            grid_size = model.output_shape[1]
+            num_anchors = model.output_shape[3]
+            num_classes = model.output_shape[4] - 5
+            anchors = ANCHORS # Sử dụng anchors mặc định nếu không có info
+            class_names = None
+            print("Warning: Using default anchors and inferred parameters.")
+        except Exception as e:
+            print(f"Could not infer parameters from model shape. Error: {e}")
+            return
+    else:
+        with open(info_path, 'r') as f:
+            model_info = yaml.safe_load(f)
+        img_size = model_info['img_size']
+        grid_size = model_info['grid_size']
+        num_classes = model_info['num_classes']
+        class_names = model_info['class_names']
+        anchors = np.array(model_info['anchors']) # Load anchors từ info
+        num_anchors = model_info['num_anchors']
+
+    print("Loading validation data...")
+    # Tạo val_dataset với thông tin đã load
+    if data_path.endswith('.yaml') or data_path.endswith('.yml'):
+         with open(data_path, 'r') as f:
+            data_config = yaml.safe_load(f)
+         val_path = os.path.join(os.path.dirname(data_path), data_config['val'])
+         val_dataset = YOLODatasetFromPaths(
+            val_path, img_size=img_size, grid_size=grid_size, batch_size=batch_size,
+            num_classes=num_classes, class_names=class_names,
+            anchors=anchors, num_anchors=num_anchors, augment=False, verbose=False
+         )
+    else:
+        _, val_dataset, _ = get_data_loaders(
+            data_path, img_size=img_size, grid_size=grid_size, batch_size=batch_size,
+            anchors=anchors, num_anchors=num_anchors
         )
-        
-        # Convert back to RGB for display
-        result_img = cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB)
-        
-        if output_dir:
-            cv2.imwrite(
-                os.path.join(output_dir, f'detection_sample_{i}.jpg'),
-                result_img * 255
-            )
 
-def inference(model, image_path, grid_size=8, num_classes=1, class_names=None, img_size=64):
-    """Run inference on a single image"""
-    from utils import process_predictions, draw_boxes
-    import cv2
-    
-    # Load and preprocess image
-    img = cv2.imread(image_path)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img_resized = cv2.resize(img, (img_size, img_size))
-    img_norm = img_resized.astype(np.float32) / 255.0
-    
-    # Add batch dimension
-    input_data = np.expand_dims(img_norm, axis=0)
-    
-    # Run prediction
-    predictions = model.predict(input_data)
-    
-    # Process predictions
+    # Lấy một batch để đánh giá
+    try:
+        batch_x, batch_y = next(iter(val_dataset))
+    except StopIteration:
+        print("Validation dataset is empty or too small.")
+        return
+
+    print("Running predictions...")
+    predictions = model.predict(batch_x)
+
+    print("Processing predictions...")
+    # Truyền anchors và num_anchors vào process_predictions
     all_boxes, all_scores, all_classes = process_predictions(
-        predictions, 
+        predictions,
         grid_size=grid_size,
-        confidence_threshold=0.3,
+        confidence_threshold=0.3, # Ngưỡng tin cậy để visualize
         nms_threshold=0.5,
-        num_classes=num_classes
+        num_classes=num_classes,
+        anchors=anchors, # Thêm
+        num_anchors=num_anchors # Thêm
     )
-    
-    # Draw boxes on image
-    result_img = draw_boxes(
-        img_norm, all_boxes[0], all_scores[0], all_classes[0], 
+
+    print("Plotting results...")
+    # Sử dụng hàm plot_detection_results từ utils
+    fig = plot_detection_results(
+        images=batch_x, # Ảnh đã chuẩn hóa [0,1]
+        all_boxes=all_boxes,
+        all_scores=all_scores,
+        all_classes=all_classes,
+        class_names=class_names,
+        figsize=(10, 10)
+    )
+    eval_plot_path = os.path.join(os.path.dirname(model_path), "evaluation_results.png")
+    fig.savefig(eval_plot_path)
+    print(f"Evaluation plot saved to {eval_plot_path}")
+    # plt.show()
+
+def inference(model_path, image_path, output_path=None):
+    """Run inference on a single image."""
+    print(f"Loading model from {model_path}...")
+    model = tf.keras.models.load_model(model_path, compile=False)
+
+    # Load model info
+    info_path = model_path.replace('.keras', '_info.json')
+    if not os.path.exists(info_path):
+        print(f"Error: Model info file not found at {info_path}")
+        # Fallback
+        try:
+            img_size = model.input_shape[1]
+            grid_size = model.output_shape[1]
+            num_anchors = model.output_shape[3]
+            num_classes = model.output_shape[4] - 5
+            anchors = ANCHORS
+            class_names = None
+            print("Warning: Using default anchors and inferred parameters.")
+        except Exception as e:
+            print(f"Could not infer parameters from model shape. Error: {e}")
+            return
+    else:
+        with open(info_path, 'r') as f:
+            model_info = yaml.safe_load(f)
+        img_size = model_info['img_size']
+        grid_size = model_info['grid_size']
+        num_classes = model_info['num_classes']
+        class_names = model_info['class_names']
+        anchors = np.array(model_info['anchors'])
+        num_anchors = model_info['num_anchors']
+
+    print(f"Loading and preprocessing image {image_path}...")
+    img = cv2.imread(image_path)
+    if img is None:
+        print(f"Error: Could not read image {image_path}")
+        return
+
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img_resized = cv2.resize(img_rgb, (img_size, img_size))
+    img_normalized = img_resized.astype(np.float32) / 255.0
+    img_batch = np.expand_dims(img_normalized, axis=0)
+
+    print("Running prediction...")
+    predictions = model.predict(img_batch)
+
+    print("Processing predictions...")
+    # Truyền anchors và num_anchors vào process_predictions
+    all_boxes, all_scores, all_classes = process_predictions(
+        predictions,
+        grid_size=grid_size,
+        confidence_threshold=0.3, # Ngưỡng tin cậy cho inference
+        nms_threshold=0.5,
+        num_classes=num_classes,
+        anchors=anchors, # Thêm
+        num_anchors=num_anchors # Thêm
+    )
+
+    # Lấy kết quả cho ảnh đầu tiên (và duy nhất) trong batch
+    boxes = all_boxes[0]
+    scores = all_scores[0]
+    classes = all_classes[0]
+
+    print(f"Found {len(boxes)} objects.")
+
+    # Vẽ bounding boxes lên ảnh gốc
+    img_with_boxes = draw_boxes(
+        img, # Vẽ lên ảnh gốc chưa resize
+        boxes, # Tọa độ đã chuẩn hóa [0,1]
+        scores,
+        classes.astype(int),
         class_names=class_names
     )
-    
-    return result_img, all_boxes[0], all_scores[0], all_classes[0]
+
+    # Lưu hoặc hiển thị ảnh kết quả
+    if output_path:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        cv2.imwrite(output_path, img_with_boxes)
+        print(f"Output image saved to {output_path}")
+    else:
+        # Hiển thị bằng matplotlib (vì cv2.imshow có thể không hoạt động tốt trong mọi môi trường)
+        plt.figure(figsize=(10, 10))
+        plt.imshow(cv2.cvtColor(img_with_boxes, cv2.COLOR_BGR2RGB))
+        plt.axis('off')
+        plt.show()
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Train object detection model')
-    parser.add_argument('--data_path', '--data', type=str, required=True, 
-                      help='Path to dataset directory or YAML file (required)')
-    parser.add_argument('--output_dir', '--name', type=str, default='./output',
-                      help='Directory to save models and results')
-    parser.add_argument('--img_size', '--img', type=int, default=64,
-                      help='Image size (square)')
-    parser.add_argument('--grid_size', type=int, default=8,
-                      help='Detection grid size')
-    parser.add_argument('--batch_size', '--batch', type=int, default=16,
-                      help='Batch size for training')
-    parser.add_argument('--epochs', type=int, default=50,
-                      help='Number of epochs to train')
-    parser.add_argument('--workers', type=int, default=4,
-                      help='Number of worker processes for data loading')
-    parser.add_argument('--evaluate', action='store_true',
-                      help='Evaluate model after training')
-    parser.add_argument('--weights', type=str, default=None, 
-                      help='[Not implemented] Path to pre-trained weights')
-    
+    parser = argparse.ArgumentParser(description='Train or evaluate a ResNet-YOLO detection model.')
+    subparsers = parser.add_subparsers(dest='mode', help='Select mode: train, evaluate, or inference')
+
+    # --- Train arguments ---
+    parser_train = subparsers.add_parser('train', help='Train the model')
+    parser_train.add_argument('--data_path', type=str, required=True, help='Path to dataset directory (containing train/val) or YAML file')
+    parser_train.add_argument('--img_size', type=int, default=64, help='Input image size')
+    parser_train.add_argument('--grid_size', type=int, default=8, help='Grid size for the detection head')
+    parser_train.add_argument('--batch_size', type=int, default=16, help='Training batch size')
+    parser_train.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
+    parser_train.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate')
+    parser_train.add_argument('--run_name', type=str, default='yolo_run', help='Name for the training run (logs directory)')
+    parser_train.add_argument('--metrics_freq', type=int, default=1, help='Frequency (in epochs) to calculate validation AP/AR')
+
+    # --- Evaluate arguments ---
+    parser_eval = subparsers.add_parser('evaluate', help='Evaluate the model on validation data')
+    parser_eval.add_argument('--model_path', type=str, required=True, help='Path to the trained .keras model file')
+    parser_eval.add_argument('--data_path', type=str, required=True, help='Path to dataset directory (containing val) or YAML file')
+    # img_size, grid_size sẽ được đọc từ model info
+
+    # --- Inference arguments ---
+    parser_infer = subparsers.add_parser('inference', help='Run inference on a single image')
+    parser_infer.add_argument('--model_path', type=str, required=True, help='Path to the trained .keras model file')
+    parser_infer.add_argument('--image_path', type=str, required=True, help='Path to the input image')
+    parser_infer.add_argument('--output_path', type=str, default=None, help='Path to save the output image with detections (optional)')
+
     args = parser.parse_args()
-    
-    # Hiển thị thông số
-    print("=== Training Configuration ===")
-    print(f"Dataset path: {args.data_path}")
-    print(f"Output directory: {args.output_dir}")
-    print(f"Image size: {args.img_size}x{args.img_size}")
-    print(f"Grid size: {args.grid_size}")
-    print(f"Batch size: {args.batch_size}")
-    print(f"Epochs: {args.epochs}")
-    print(f"Workers: {args.workers}")
-    print(f"Evaluate after training: {args.evaluate}")
-    print(f"Pre-trained weights: {args.weights}")
-    print("=============================")
-    
-    if args.weights:
-        print("WARNING: Loading pre-trained weights is not implemented yet. Training from scratch.")
-    
-    # Train the model
-    model, train_dataset, val_dataset, num_classes = train(args)
-    
-    # Evaluate if requested
-    if args.evaluate:
-        import cv2  # Import here as it's used in evaluate
-        evaluate(model, val_dataset, num_classes, args.grid_size, args.output_dir)
+
+    if args.mode == 'train':
+        train(args)
+    elif args.mode == 'evaluate':
+        # Không cần truyền img_size, grid_size vì sẽ đọc từ info
+        evaluate(args.model_path, args.data_path)
+    elif args.mode == 'inference':
+        inference(args.model_path, args.image_path, args.output_path)
+    else:
+        parser.print_help()
