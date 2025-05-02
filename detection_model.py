@@ -95,8 +95,8 @@ class ResNetYOLODetection:
                           kernel_regularizer=tf.keras.regularizers.l2(0.001),  # Giảm từ 0.01 xuống 0.001
                           activation=self.activation)(x)
         x = layers.BatchNormalization()(x)
-        x = layers.Dropout(0.4)(x)  # Tăng dropout rate
-        
+        x = layers.Dropout(0.4)(x)  # Thêm dropout
+     
         raw_detection_output = layers.Conv2D(
             self.output_dims,
             kernel_size=1,
