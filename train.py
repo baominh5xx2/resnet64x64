@@ -7,231 +7,195 @@ import cv2
 import json
 import yaml
 from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping, TensorBoard, Callback
+from tqdm import tqdm # Import tqdm for progress bar
 
 from dataset import get_data_loaders, YOLODatasetFromPaths
 from detection_model import build_detection_model
 from utils import process_predictions, draw_boxes, plot_detection_results
 
 class DetectionMetricsCallback(Callback):
-    """Callback để tính toán và hiển thị AP và AR sau mỗi epoch"""
-    def __init__(self, validation_data, grid_size, num_classes, iou_threshold=0.5):
+    """Callback để tính toán và hiển thị AP và AR sau mỗi epoch trên toàn bộ validation set"""
+    def __init__(self, validation_data, grid_size, num_classes, iou_threshold=0.5, confidence_threshold=0.1, nms_threshold=0.5):
         super().__init__()
         self.validation_data = validation_data
         self.grid_size = grid_size
         self.num_classes = num_classes
         self.iou_threshold = iou_threshold
+        self.confidence_threshold = confidence_threshold # Thêm ngưỡng tin cậy cho xử lý dự đoán
+        self.nms_threshold = nms_threshold # Thêm ngưỡng NMS
         self.ap_history = []
         self.ar_history = []
-        
+
     def on_epoch_end(self, epoch, logs=None):
-        # Lấy một batch từ validation data
-        batch_x, batch_y = next(iter(self.validation_data))
-        
-        # Dự đoán
-        predictions = self.model.predict(batch_x)
-        
-        # Tính AP và AR
-        ap, ar = self.calculate_metrics(batch_y, predictions)
-        
+        print("\nCalculating validation metrics...")
+        all_true_boxes = []
+        all_true_classes = []
+        all_pred_boxes = []
+        all_pred_scores = []
+        all_pred_classes = []
+
+        # Lặp qua toàn bộ validation dataset
+        # Sử dụng tqdm để hiển thị thanh tiến trình
+        for batch_x, batch_y in tqdm(self.validation_data, desc="Validation Metrics"):
+            # Dự đoán trên batch hiện tại
+            predictions = self.model.predict(batch_x, verbose=0) # Tắt verbose của predict
+
+            # Xử lý dự đoán cho batch này (áp dụng confidence threshold và NMS)
+            batch_pred_boxes, batch_pred_scores, batch_pred_classes = process_predictions(
+                predictions,
+                grid_size=self.grid_size,
+                confidence_threshold=self.confidence_threshold,
+                nms_threshold=self.nms_threshold,
+                num_classes=self.num_classes
+            )
+
+            # Trích xuất ground truth cho batch này
+            batch_true_boxes, batch_true_classes = self._extract_true_boxes_batch(batch_y)
+
+            # Lưu kết quả của batch
+            all_true_boxes.extend(batch_true_boxes)
+            all_true_classes.extend(batch_true_classes)
+            all_pred_boxes.extend(batch_pred_boxes)
+            all_pred_scores.extend(batch_pred_scores)
+            all_pred_classes.extend(batch_pred_classes)
+
+        # Tính toán AP và AR tổng thể trên toàn bộ dataset
+        ap, ar = self.calculate_mean_ap_ar(
+            all_true_boxes, all_true_classes,
+            all_pred_boxes, all_pred_scores, all_pred_classes
+        )
+
         # Thêm vào lịch sử
         self.ap_history.append(ap)
         self.ar_history.append(ar)
-        
+
         # Thêm vào logs
         logs = logs or {}
         logs['val_AP'] = ap
         logs['val_AR'] = ar
-        
-        # Hiển thị
-        print(f" - val_AP: {ap:.4f} - val_AR: {ar:.4f}")
-    
-    def calculate_metrics(self, true_y, pred_y):
-        """Tính toán AP và AR từ ground truth và dự đoán"""
-        batch_size = len(true_y)
-        total_ap = 0.0
-        total_ar = 0.0
-        
-        for b in range(batch_size):
-            # Lấy ground truth
-            y_true = true_y[b]
-            
-            # Lấy dự đoán
-            y_pred = pred_y[b]
-            
-            # Tạo danh sách boxes từ ground truth
-            true_boxes = []
-            true_classes = []
+
+        # Hiển thị (Keras sẽ tự động hiển thị từ logs)
+        # print(f" - val_AP: {ap:.4f} - val_AR: {ar:.4f}") # Không cần in ở đây nữa
+
+    def _extract_true_boxes_batch(self, batch_y):
+        """Trích xuất ground truth boxes và classes từ một batch target"""
+        batch_true_boxes = []
+        batch_true_classes = []
+        for y_true in batch_y:
+            true_boxes_img = []
+            true_classes_img = []
             for row in range(self.grid_size):
                 for col in range(self.grid_size):
                     if y_true[row, col, 4] > 0:  # Nếu có object
-                        # Lấy tọa độ và kích thước từ ground truth
                         x_cell, y_cell, w_cell, h_cell = y_true[row, col, 0:4]
-                        
-                        # Chuyển sang tọa độ hình ảnh
                         x_center = (col + x_cell) / self.grid_size
                         y_center = (row + y_cell) / self.grid_size
                         w = w_cell / self.grid_size
                         h = h_cell / self.grid_size
-                        
-                        # Chuyển sang format [x_min, y_min, x_max, y_max]
                         x_min = max(0, x_center - w/2)
                         y_min = max(0, y_center - h/2)
                         x_max = min(1, x_center + w/2)
                         y_max = min(1, y_center + h/2)
-                        
-                        # Lớp
                         class_id = np.argmax(y_true[row, col, 5:5+self.num_classes])
-                        
-                        true_boxes.append([x_min, y_min, x_max, y_max])
-                        true_classes.append(class_id)
-            
-            # Xử lý dự đoán
-            pred_boxes = []
-            pred_scores = []
-            pred_classes = []
-            
-            for row in range(self.grid_size):
-                for col in range(self.grid_size):
-                    # Lấy dự đoán cho ô lưới này
-                    cell_pred = y_pred[row, col]
-                    
-                    # Lấy tọa độ và kích thước
-                    x_cell, y_cell, w_cell, h_cell = cell_pred[0:4]
-                    objectness = cell_pred[4]
-                    
-                    # Bỏ qua nếu objectness thấp
-                    if objectness < 0.00005:
-                        continue
-                    
-                    # Lấy class
-                    class_probs = cell_pred[5:5+self.num_classes]
-                    class_id = np.argmax(class_probs)
-                    class_score = class_probs[class_id]
-                    
-                    # Điểm số cuối cùng (objectness * class probability)
-                    score = objectness * class_score
-                    
-                    # Bỏ qua nếu điểm số thấp
-                    if score < 0.00005:
-                        continue
-                    
-                    # Chuyển sang tọa độ hình ảnh
-                    x_center = (col + x_cell) / self.grid_size
-                    y_center = (row + y_cell) / self.grid_size
-                    w = w_cell / self.grid_size
-                    h = h_cell / self.grid_size
-                    
-                    # Chuyển sang format [x_min, y_min, x_max, y_max]
-                    x_min = max(0, x_center - w/2)
-                    y_min = max(0, y_center - h/2)
-                    x_max = min(1, x_center + w/2)
-                    y_max = min(1, y_center + h/2)
-                    
-                    pred_boxes.append([x_min, y_min, x_max, y_max])
-                    pred_scores.append(score)
-                    pred_classes.append(class_id)
-            
-            # Chuyển sang numpy arrays
-            if len(true_boxes) > 0:
-                true_boxes = np.array(true_boxes)
-                true_classes = np.array(true_classes)
-            else:
-                true_boxes = np.zeros((0, 4))
-                true_classes = np.array([])
-            
-            if len(pred_boxes) > 0:
-                pred_boxes = np.array(pred_boxes)
-                pred_scores = np.array(pred_scores)
-                pred_classes = np.array(pred_classes)
-            else:
-                pred_boxes = np.zeros((0, 4))
-                pred_scores = np.array([])
-                pred_classes = np.array([])
-            
-            # Tính AP và AR cho hình ảnh này
-            ap, ar = self.calculate_ap_ar(true_boxes, true_classes, pred_boxes, pred_scores, pred_classes)
-            
-            total_ap += ap
-            total_ar += ar
-        
-        # Trung bình trên batch
-        mean_ap = total_ap / batch_size if batch_size > 0 else 0
-        mean_ar = total_ar / batch_size if batch_size > 0 else 0
-        
-        return mean_ap, mean_ar
-    
-    def calculate_ap_ar(self, true_boxes, true_classes, pred_boxes, pred_scores, pred_classes):
-        """Tính toán AP và AR cho một hình ảnh"""
-        # Nếu không có ground truth hoặc dự đoán
-        if len(true_boxes) == 0 or len(pred_boxes) == 0:
-            return 0.0, 0.0
-        
-        # Số lượng ground truth
-        num_gt = len(true_boxes)
-        
-        # Khởi tạo mảng đã sử dụng để đánh dấu ground truth đã match
-        gt_used = np.zeros(num_gt, dtype=bool)
-        
-        # Sắp xếp dự đoán theo điểm số giảm dần
-        order = np.argsort(-pred_scores)
-        pred_boxes = pred_boxes[order]
-        pred_scores = pred_scores[order]
-        pred_classes = pred_classes[order]
-        
-        # Tính IoU cho mỗi cặp (predicted, ground truth)
-        iou_matrix = self.calculate_iou_matrix(pred_boxes, true_boxes)
-        
-        # Đếm số TP và FP
-        tp = np.zeros(len(pred_boxes))
-        fp = np.zeros(len(pred_boxes))
-        
-        for i in range(len(pred_boxes)):
-            # Chỉ xét các ground truth có cùng lớp
-            gt_same_class = np.where(true_classes == pred_classes[i])[0]
-            
-            # Nếu không có ground truth cùng lớp, là FP
-            if len(gt_same_class) == 0:
-                fp[i] = 1
+                        true_boxes_img.append([x_min, y_min, x_max, y_max])
+                        true_classes_img.append(class_id)
+            batch_true_boxes.append(np.array(true_boxes_img) if true_boxes_img else np.zeros((0, 4)))
+            batch_true_classes.append(np.array(true_classes_img) if true_classes_img else np.array([]))
+        return batch_true_boxes, batch_true_classes
+
+    def calculate_mean_ap_ar(self, all_true_boxes, all_true_classes, all_pred_boxes, all_pred_scores, all_pred_classes):
+        """Tính toán mAP và mAR trên toàn bộ dataset"""
+        all_scores_list = []
+        all_tp_fp_list = [] # 1 for TP, 0 for FP
+        total_num_gt = 0
+        total_matched_gt = 0
+
+        # Lặp qua từng ảnh trong dataset
+        for i in range(len(all_true_boxes)):
+            true_boxes = all_true_boxes[i]
+            true_classes = all_true_classes[i]
+            pred_boxes = all_pred_boxes[i]
+            pred_scores = all_pred_scores[i]
+            pred_classes = all_pred_classes[i]
+
+            num_gt = len(true_boxes)
+            total_num_gt += num_gt
+
+            if num_gt == 0 or len(pred_boxes) == 0:
+                # Nếu không có GT hoặc không có dự đoán, thêm FP cho các dự đoán (nếu có)
+                for score in pred_scores:
+                    all_scores_list.append(score)
+                    all_tp_fp_list.append(0) # FP
                 continue
-            
-            # Lấy IoU với các ground truth cùng lớp
-            ious = iou_matrix[i, gt_same_class]
-            
-            # Lấy GT có IoU cao nhất
-            max_iou_idx = np.argmax(ious)
-            max_iou = ious[max_iou_idx]
-            gt_idx = gt_same_class[max_iou_idx]
-            
-            # Nếu IoU > threshold và GT chưa dùng, đây là TP
-            if max_iou >= self.iou_threshold and not gt_used[gt_idx]:
-                tp[i] = 1
-                gt_used[gt_idx] = True
-            else:
-                fp[i] = 1
-        
-        # Tính precision và recall
-        cum_tp = np.cumsum(tp)
-        cum_fp = np.cumsum(fp)
-        recall = cum_tp / num_gt if num_gt > 0 else np.zeros_like(cum_tp)
-        precision = cum_tp / (cum_tp + cum_fp)
-        
-        # Tính AP bằng phương pháp AUC
+
+            gt_used = np.zeros(num_gt, dtype=bool)
+
+            # Sắp xếp dự đoán theo điểm số giảm dần
+            order = np.argsort(-pred_scores)
+            pred_boxes = pred_boxes[order]
+            pred_scores = pred_scores[order]
+            pred_classes = pred_classes[order]
+
+            # Tính IoU matrix
+            iou_matrix = self.calculate_iou_matrix(pred_boxes, true_boxes)
+
+            # Xác định TP/FP cho từng dự đoán
+            for j in range(len(pred_boxes)):
+                pred_class = pred_classes[j]
+                pred_score = pred_scores[j]
+
+                # Tìm các GT cùng lớp
+                gt_same_class_indices = np.where(true_classes == pred_class)[0]
+
+                is_tp = False
+                if len(gt_same_class_indices) > 0:
+                    ious = iou_matrix[j, gt_same_class_indices]
+                    best_match_local_idx = np.argmax(ious)
+                    best_iou = ious[best_match_local_idx]
+                    best_match_gt_idx = gt_same_class_indices[best_match_local_idx]
+
+                    if best_iou >= self.iou_threshold and not gt_used[best_match_gt_idx]:
+                        is_tp = True
+                        gt_used[best_match_gt_idx] = True
+
+                all_scores_list.append(pred_score)
+                all_tp_fp_list.append(1 if is_tp else 0)
+
+            total_matched_gt += np.sum(gt_used)
+
+        # Tính toán AP tổng thể
+        if not all_scores_list: # Nếu không có dự đoán nào trên toàn bộ dataset
+             return 0.0, 0.0
+
+        # Sắp xếp dựa trên scores
+        scores_array = np.array(all_scores_list)
+        tp_fp_array = np.array(all_tp_fp_list)
+
+        order = np.argsort(-scores_array)
+        tp_fp_array = tp_fp_array[order]
+
+        cum_tp = np.cumsum(tp_fp_array)
+        cum_fp = np.cumsum(1 - tp_fp_array)
+
+        recall = cum_tp / total_num_gt if total_num_gt > 0 else np.zeros_like(cum_tp)
+        precision = cum_tp / (cum_tp + cum_fp + 1e-9) # Thêm epsilon để tránh chia cho 0
+
         ap = self.calculate_ap_from_precision_recall(precision, recall)
-        
-        # Tính AR (trung bình recall ở các threshold IoU)
-        ar = np.sum(gt_used) / num_gt if num_gt > 0 else 0.0
-        
+        ar = total_matched_gt / total_num_gt if total_num_gt > 0 else 0.0
+
         return ap, ar
-    
+
+    # --- Các hàm calculate_iou_matrix và calculate_ap_from_precision_recall giữ nguyên ---
     def calculate_iou_matrix(self, boxes1, boxes2):
         """Tính ma trận IoU giữa hai tập hợp boxes"""
+        # ... (giữ nguyên code gốc) ...
         # Xử lý trường hợp mảng rỗng
         if len(boxes1) == 0 or len(boxes2) == 0:
             return np.zeros((len(boxes1), len(boxes2)))
-        
+
         # Khởi tạo ma trận IoU
         iou_matrix = np.zeros((len(boxes1), len(boxes2)))
-        
+
         # Tính IoU cho từng cặp boxes
         for i, box1 in enumerate(boxes1):
             for j, box2 in enumerate(boxes2):
@@ -240,38 +204,40 @@ class DetectionMetricsCallback(Callback):
                 y1 = max(box1[1], box2[1])
                 x2 = min(box1[2], box2[2])
                 y2 = min(box1[3], box2[3])
-                
+
                 # Diện tích phần giao
                 inter_area = max(0, x2 - x1) * max(0, y2 - y1)
-                
+
                 # Diện tích của từng box
                 box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
                 box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
-                
+
                 # Diện tích phần hợp
                 union_area = box1_area + box2_area - inter_area
-                
+
                 # IoU
                 iou_matrix[i, j] = inter_area / union_area if union_area > 0 else 0
-        
+
         return iou_matrix
-    
+
+
     def calculate_ap_from_precision_recall(self, precision, recall):
         """Tính AP từ precision và recall bằng phương pháp AUC"""
+        # ... (giữ nguyên code gốc) ...
         # Thêm điểm đầu và cuối
         mrec = np.concatenate(([0.0], recall, [1.0]))
         mpre = np.concatenate(([0.0], precision, [0.0]))
-        
+
         # Làm mịn precision (đảm bảo precision không giảm)
         for i in range(mpre.size - 1, 0, -1):
             mpre[i-1] = np.maximum(mpre[i-1], mpre[i])
-        
+
         # Tìm các điểm mà recall thay đổi
         i = np.where(mrec[1:] != mrec[:-1])[0]
-        
+
         # Tính diện tích dưới đường cong precision-recall
         ap = np.sum((mrec[i+1] - mrec[i]) * mpre[i+1])
-        
+
         return ap
 
 def save_model_with_info(model, save_path, grid_size, num_classes):
@@ -394,11 +360,14 @@ def train(args):
             write_graph=True,
             update_freq='epoch'
         ),
-        # Thêm callback để tính AP và AR
+        # Thêm callback để tính AP và AR - THAY ĐỔI TẠI ĐÂY
         DetectionMetricsCallback(
             validation_data=val_dataset,
             grid_size=args.grid_size,
-            num_classes=num_classes
+            num_classes=num_classes,
+            iou_threshold=0.3,  # Thêm tham số này với giá trị 0.3
+            confidence_threshold=0.1, # Ngưỡng tin cậy để xử lý dự đoán
+            nms_threshold=0.5        # Ngưỡng NMS
         )
     ]
     
