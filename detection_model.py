@@ -221,7 +221,7 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
     # Compile model with custom loss and metrics
     model.compile(
         optimizer=tf.keras.optimizers.SGD(
-            learning_rate=0.01, 
+            learning_rate=0.001, 
             momentum=0.9,
             nesterov=True,
             weight_decay=0.0005  # Weight decay thường dùng trong YOLO
