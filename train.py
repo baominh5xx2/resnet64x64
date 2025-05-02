@@ -486,15 +486,172 @@ def train(args):
 
 def evaluate(model, dataset, num_classes, grid_size=8, output_dir=None):
     """Evaluate the model and visualize some predictions"""
-    print("Evaluating model...")
+    print("Evaluating model on complete validation set...")
     
-    # Get a batch of data for visualization
+    # Khởi tạo biến tích lũy cho toàn bộ validation set
+    all_true_boxes = []
+    all_true_classes = []
+    all_pred_boxes = []
+    all_pred_scores = []
+    all_pred_classes = []
+    
+    # Lặp qua toàn bộ validation set
+    num_batches = 0
+    print("Collecting predictions...")
+    for batch_x, batch_y in dataset:
+        # Dự đoán
+        predictions = model.predict(batch_x, verbose=0)
+        
+        # Xử lý từng batch
+        for b in range(len(batch_x)):
+            # Lấy ground truth
+            y_true = batch_y[b]
+            
+            # Lấy dự đoán
+            y_pred = predictions[b]
+            
+            # Tạo danh sách boxes từ ground truth
+            true_boxes = []
+            true_classes = []
+            for row in range(grid_size):
+                for col in range(grid_size):
+                    if y_true[row, col, 4] > 0:  # Nếu có object
+                        # Lấy tọa độ và kích thước từ ground truth
+                        x_cell, y_cell, w_cell, h_cell = y_true[row, col, 0:4]
+                        
+                        # Chuyển sang tọa độ hình ảnh
+                        x_center = (col + x_cell) / grid_size
+                        y_center = (row + y_cell) / grid_size
+                        w = w_cell / grid_size
+                        h = h_cell / grid_size
+                        
+                        # Chuyển sang format [x_min, y_min, x_max, y_max]
+                        x_min = max(0, x_center - w/2)
+                        y_min = max(0, y_center - h/2)
+                        x_max = min(1, x_center + w/2)
+                        y_max = min(1, y_center + h/2)
+                        
+                        # Lớp
+                        class_id = np.argmax(y_true[row, col, 5:5+num_classes])
+                        
+                        true_boxes.append([x_min, y_min, x_max, y_max])
+                        true_classes.append(class_id)
+            
+            # Xử lý dự đoán
+            pred_boxes = []
+            pred_scores = []
+            pred_classes = []
+            
+            for row in range(grid_size):
+                for col in range(grid_size):
+                    # Lấy dự đoán cho ô lưới này
+                    cell_pred = y_pred[row, col]
+                    
+                    # Lấy tọa độ và kích thước
+                    x_cell, y_cell, w_cell, h_cell = cell_pred[0:4]
+                    objectness = cell_pred[4]
+                    
+                    # Bỏ qua nếu objectness thấp
+                    if objectness < 0.01:  # Ngưỡng cao hơn để lọc nhiễu
+                        continue
+                    
+                    # Lấy class
+                    class_probs = cell_pred[5:5+num_classes]
+                    class_id = np.argmax(class_probs)
+                    class_score = class_probs[class_id]
+                    
+                    # Điểm số cuối cùng (objectness * class probability)
+                    score = objectness * class_score
+                    
+                    # Bỏ qua nếu điểm số thấp
+                    if score < 0.01:  # Ngưỡng cao hơn để lọc nhiễu
+                        continue
+                    
+                    # Chuyển sang tọa độ hình ảnh
+                    x_center = (col + x_cell) / grid_size
+                    y_center = (row + y_cell) / grid_size
+                    w = w_cell / grid_size
+                    h = h_cell / grid_size
+                    
+                    # Chuyển sang format [x_min, y_min, x_max, y_max]
+                    x_min = max(0, x_center - w/2)
+                    y_min = max(0, y_center - h/2)
+                    x_max = min(1, x_center + w/2)
+                    y_max = min(1, y_center + h/2)
+                    
+                    pred_boxes.append([x_min, y_min, x_max, y_max])
+                    pred_scores.append(score)
+                    pred_classes.append(class_id)
+            
+            # Thêm vào danh sách tổng
+            if true_boxes:
+                all_true_boxes.extend(true_boxes)
+                all_true_classes.extend(true_classes)
+            
+            if pred_boxes:
+                all_pred_boxes.extend(pred_boxes)
+                all_pred_scores.extend(pred_scores)
+                all_pred_classes.extend(pred_classes)
+        
+        num_batches += 1
+        if num_batches % 10 == 0:
+            print(f"Processed {num_batches} batches...")
+    
+    print(f"Collected {len(all_true_boxes)} ground truth objects and {len(all_pred_boxes)} predictions")
+    
+    # Chuyển sang numpy arrays
+    all_true_boxes = np.array(all_true_boxes) if all_true_boxes else np.zeros((0, 4))
+    all_true_classes = np.array(all_true_classes) if all_true_classes else np.array([])
+    all_pred_boxes = np.array(all_pred_boxes) if all_pred_boxes else np.zeros((0, 4))
+    all_pred_scores = np.array(all_pred_scores) if all_pred_scores else np.array([])
+    all_pred_classes = np.array(all_pred_classes) if all_pred_classes else np.array([])
+    
+    # Tính toán AP và AR tổng thể
+    iou_threshold = 0.5
+    print("\n=== EVALUATION RESULTS ===")
+    print(f"IoU threshold: {iou_threshold}")
+    
+    # Tính AP và AR tổng thể
+    metrics_calc = DetectionMetricsCallback(None, grid_size, num_classes, iou_threshold)
+    overall_ap, overall_ar = metrics_calc.calculate_ap_ar(
+        all_true_boxes, all_true_classes, 
+        all_pred_boxes, all_pred_scores, all_pred_classes
+    )
+    
+    print(f"\nOverall metrics:")
+    print(f"  - Average Precision (AP): {overall_ap:.4f}")
+    print(f"  - Average Recall (AR): {overall_ar:.4f}")
+    
+    # Tính AP và AR cho từng class
+    class_names = dataset.class_names if hasattr(dataset, 'class_names') else [f"Class {i}" for i in range(num_classes)]
+    
+    print("\nPer-class metrics:")
+    for c in range(num_classes):
+        # Lọc chỉ lấy ground truth của class này
+        class_true_indices = np.where(all_true_classes == c)[0]
+        class_true_boxes = all_true_boxes[class_true_indices] if len(class_true_indices) > 0 else np.zeros((0, 4))
+        class_true_classes = all_true_classes[class_true_indices] if len(class_true_indices) > 0 else np.array([])
+        
+        # Lọc chỉ lấy predictions của class này
+        class_pred_indices = np.where(all_pred_classes == c)[0]
+        class_pred_boxes = all_pred_boxes[class_pred_indices] if len(class_pred_indices) > 0 else np.zeros((0, 4))
+        class_pred_scores = all_pred_scores[class_pred_indices] if len(class_pred_indices) > 0 else np.array([])
+        class_pred_classes = all_pred_classes[class_pred_indices] if len(class_pred_indices) > 0 else np.array([])
+        
+        # Tính AP và AR cho class này
+        class_ap, class_ar = metrics_calc.calculate_ap_ar(
+            class_true_boxes, class_true_classes, 
+            class_pred_boxes, class_pred_scores, class_pred_classes
+        )
+        
+        print(f"  - {class_names[c]}: AP={class_ap:.4f}, AR={class_ar:.4f}, GT={len(class_true_boxes)}, Pred={len(class_pred_boxes)}")
+    
+    # Hiển thị một số ảnh ví dụ với detection
+    print("\nGenerating visualization examples...")
     batch_x, batch_y = next(iter(dataset))
-    
-    # Make predictions
     predictions = model.predict(batch_x)
     
-    # Process predictions
+    # Process predictions for visualization
     all_boxes, all_scores, all_classes = process_predictions(
         predictions, 
         grid_size=grid_size,
@@ -503,8 +660,6 @@ def evaluate(model, dataset, num_classes, grid_size=8, output_dir=None):
         num_classes=num_classes
     )
     
-    # Visualize results
-    class_names = dataset.class_names if hasattr(dataset, 'class_names') else None
     fig = plot_detection_results(
         batch_x, all_boxes, all_scores, all_classes, 
         class_names=class_names
@@ -512,28 +667,7 @@ def evaluate(model, dataset, num_classes, grid_size=8, output_dir=None):
     
     if output_dir:
         plt.savefig(os.path.join(output_dir, 'detection_results.png'))
-    
-    # Show individual images with detections
-    for i in range(min(5, len(batch_x))):
-        image = batch_x[i]
-        boxes = all_boxes[i]
-        scores = all_scores[i]
-        class_ids = all_classes[i]
-        
-        # Draw bounding boxes on the image
-        result_img = draw_boxes(
-            image, boxes, scores, class_ids, 
-            class_names=class_names
-        )
-        
-        # Convert back to RGB for display
-        result_img = cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB)
-        
-        if output_dir:
-            cv2.imwrite(
-                os.path.join(output_dir, f'detection_sample_{i}.jpg'),
-                result_img * 255
-            )
+        print(f"Visualization saved to {os.path.join(output_dir, 'detection_results.png')}")
 
 def inference(model, image_path, grid_size=8, num_classes=1, class_names=None, img_size=64):
     """Run inference on a single image"""
@@ -611,7 +745,6 @@ if __name__ == '__main__':
     # Train the model
     model, train_dataset, val_dataset, num_classes = train(args)
     
-    # Evaluate if requested
-    if args.evaluate:
-        import cv2  # Import here as it's used in evaluate
-        evaluate(model, val_dataset, num_classes, args.grid_size, args.output_dir)
+    # Evaluate on full validation set
+    print("\nEvaluating model on full validation set...")
+    evaluate(model, val_dataset, num_classes, args.grid_size, args.output_dir)

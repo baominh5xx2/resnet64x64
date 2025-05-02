@@ -100,7 +100,7 @@ class ResNetYOLODetection:
             kernel_size=1,
             activation=None,
             padding='same',
-            kernel_regularizer=tf.keras.regularizers.l2(0.005),  # Thêm L2 regularization
+            kernel_regularizer=tf.keras.regularizers.l2(0.001),  # Thêm L2 regularization
             name='raw_detection_output'
         )(x)
 
@@ -210,9 +210,10 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
     # Compile model with custom loss and metrics
     model.compile(
         optimizer=tf.keras.optimizers.SGD(
-            learning_rate=0.001, 
+            learning_rate=0.0001, 
             momentum=0.9,
             nesterov=True,
+            clipnorm=1.0,
             weight_decay=0.0005  # Weight decay thường dùng trong YOLO
         ),
         loss=detection_loss
