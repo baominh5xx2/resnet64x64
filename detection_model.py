@@ -91,7 +91,7 @@ class ResNetYOLODetection:
                 print(f"Applied pooling: {x.shape}")
         
         # Detection head - predict bounding boxes, objectness and class probabilities
-        x = layers.Conv2D(256, kernel_size=3, padding='same', activation=self.activation)(x)
+        x = layers.Conv2D(512, kernel_size=3, padding='same', activation=self.activation)(x)
         x = layers.BatchNormalization()(x)
         x = layers.Dropout(0.3)(x)  # Thêm dropout
 
@@ -222,7 +222,7 @@ def build_detection_model(input_shape=(64, 64, 3), grid_size=8, num_classes=1):
     model.compile(
         optimizer=tf.keras.optimizers.SGD(
             learning_rate=0.01, 
-            momentum=0.95,
+            momentum=0.9,
             nesterov=True,
             weight_decay=0.0005  # Weight decay thường dùng trong YOLO
         ),
