@@ -1,7 +1,4 @@
-# filepath: f:\Resnet_small_images\requirements.txt
 tensorflow>=2.4.0
 opencv-python>=4.5.0
 numpy>=1.19.0
-matplotlib>=3.3.0
-PyYAML>=5.0
-tensorflow-addons>=0.15.0
+matplotlib>=3.3.0 
