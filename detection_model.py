@@ -93,7 +93,7 @@ class ResNetYOLODetection:
         # Detection head - predict bounding boxes, objectness and class probabilities
         x = layers.Conv2D(512, kernel_size=3, padding='same', activation=self.activation)(x)
         x = layers.BatchNormalization()(x)
-        x = layers.Dropout(0.3)(x)  # Thêm dropout
+        x = layers.Dropout(0.4)(x)  # Thêm dropout
         
         raw_detection_output = layers.Conv2D(
             self.output_dims,
