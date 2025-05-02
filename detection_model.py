@@ -111,7 +111,7 @@ class ResNetYOLODetection:
             kernel_size=1,
             activation=None,
             padding='same',
-            kernel_regularizer=tf.keras.regularizers.l2(0.001),  # Thêm L2 regularization
+            kernel_regularizer=tf.keras.regularizers.l2(0.0005),  # Thêm L2 regularization
             name='raw_detection_output'
         )(x)
 
