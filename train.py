@@ -14,12 +14,13 @@ from utils import process_predictions, draw_boxes, plot_detection_results
 
 class DetectionMetricsCallback(Callback):
     """Callback để tính toán và hiển thị AP và AR sau mỗi epoch"""
-    def __init__(self, validation_data, grid_size, num_classes, iou_threshold=0.5):
+    # Hạ ngưỡng IoU mặc định xuống 0.3
+    def __init__(self, validation_data, grid_size, num_classes, iou_threshold=0.3):
         super().__init__()
         self.validation_data = validation_data
         self.grid_size = grid_size
         self.num_classes = num_classes
-        self.iou_threshold = iou_threshold
+        self.iou_threshold = iou_threshold # Ngưỡng này sẽ được dùng trong calculate_ap_ar và process_predictions
         self.ap_history = []
         self.ar_history = []
         
@@ -44,7 +45,7 @@ class DetectionMetricsCallback(Callback):
                     self.valid_images_batch_y.append(np.expand_dims(batch_y[i], axis=0))
             
             # Chỉ quét một số batch để tránh quá lâu
-            if len(self.valid_images_batch_x) >= 20:
+            if len(self.valid_images_batch_x) >= 2000:
                 break
         
         if len(self.valid_images_batch_x) > 0:
@@ -85,114 +86,63 @@ class DetectionMetricsCallback(Callback):
         batch_size = len(true_y)
         total_ap = 0.0
         total_ar = 0.0
-        
+
+        # Sử dụng process_predictions để lấy boxes sau NMS
+        # Hạ ngưỡng confidence xuống thấp hơn nữa để xem xét nhiều dự đoán hơn
+        all_pred_boxes_nms, all_pred_scores_nms, all_pred_classes_nms = process_predictions(
+            pred_y,
+            grid_size=self.grid_size,
+            confidence_threshold=0.001,  # Hạ ngưỡng confidence xuống 0.001
+            nms_threshold=self.iou_threshold, # Sử dụng iou_threshold của callback cho NMS
+            num_classes=self.num_classes
+        )
+
         for b in range(batch_size):
             # Lấy ground truth
             y_true = true_y[b]
-            
-            # Lấy dự đoán
-            y_pred = pred_y[b]
-            
-            # Tạo danh sách boxes từ ground truth
+
+            # Lấy dự đoán đã qua NMS
+            pred_boxes = all_pred_boxes_nms[b]
+            pred_scores = all_pred_scores_nms[b]
+            pred_classes = all_pred_classes_nms[b]
+
+            # Tạo danh sách boxes từ ground truth (giữ nguyên phần này)
             true_boxes = []
             true_classes = []
             for row in range(self.grid_size):
                 for col in range(self.grid_size):
-                    if y_true[row, col, 4] > 0:  # Nếu có object
-                        # Lấy tọa độ và kích thước từ ground truth
+                    if y_true[row, col, 4] > 0:
                         x_cell, y_cell, w_cell, h_cell = y_true[row, col, 0:4]
-                        
-                        # Chuyển sang tọa độ hình ảnh
                         x_center = (col + x_cell) / self.grid_size
                         y_center = (row + y_cell) / self.grid_size
                         w = w_cell / self.grid_size
                         h = h_cell / self.grid_size
-                        
-                        # Chuyển sang format [x_min, y_min, x_max, y_max]
                         x_min = max(0, x_center - w/2)
                         y_min = max(0, y_center - h/2)
                         x_max = min(1, x_center + w/2)
                         y_max = min(1, y_center + h/2)
-                        
-                        # Lớp
                         class_id = np.argmax(y_true[row, col, 5:5+self.num_classes])
-                        
                         true_boxes.append([x_min, y_min, x_max, y_max])
                         true_classes.append(class_id)
-            
-            # Xử lý dự đoán
-            pred_boxes = []
-            pred_scores = []
-            pred_classes = []
-            
-            for row in range(self.grid_size):
-                for col in range(self.grid_size):
-                    # Lấy dự đoán cho ô lưới này
-                    cell_pred = y_pred[row, col]
-                    
-                    # Lấy tọa độ và kích thước
-                    x_cell, y_cell, w_cell, h_cell = cell_pred[0:4]
-                    objectness = cell_pred[4]
-                    
-                    # Bỏ qua nếu objectness thấp
-                    if objectness < 0.00005:
-                        continue
-                    
-                    # Lấy class
-                    class_probs = cell_pred[5:5+self.num_classes]
-                    class_id = np.argmax(class_probs)
-                    class_score = class_probs[class_id]
-                    
-                    # Điểm số cuối cùng (objectness * class probability)
-                    score = objectness * class_score
-                    
-                    # Bỏ qua nếu điểm số thấp
-                    if score < 0.00005:
-                        continue
-                    
-                    # Chuyển sang tọa độ hình ảnh
-                    x_center = (col + x_cell) / self.grid_size
-                    y_center = (row + y_cell) / self.grid_size
-                    w = w_cell / self.grid_size
-                    h = h_cell / self.grid_size
-                    
-                    # Chuyển sang format [x_min, y_min, x_max, y_max]
-                    x_min = max(0, x_center - w/2)
-                    y_min = max(0, y_center - h/2)
-                    x_max = min(1, x_center + w/2)
-                    y_max = min(1, y_center + h/2)
-                    
-                    pred_boxes.append([x_min, y_min, x_max, y_max])
-                    pred_scores.append(score)
-                    pred_classes.append(class_id)
-            
-            # Chuyển sang numpy arrays
+
+            # Chuyển ground truth sang numpy array
             if len(true_boxes) > 0:
                 true_boxes = np.array(true_boxes)
                 true_classes = np.array(true_classes)
             else:
                 true_boxes = np.zeros((0, 4))
                 true_classes = np.array([])
-            
-            if len(pred_boxes) > 0:
-                pred_boxes = np.array(pred_boxes)
-                pred_scores = np.array(pred_scores)
-                pred_classes = np.array(pred_classes)
-            else:
-                pred_boxes = np.zeros((0, 4))
-                pred_scores = np.array([])
-                pred_classes = np.array([])
-            
-            # Tính AP và AR cho hình ảnh này
+
+            # Tính AP và AR cho hình ảnh này với dự đoán đã qua NMS
             ap, ar = self.calculate_ap_ar(true_boxes, true_classes, pred_boxes, pred_scores, pred_classes)
-            
+
             total_ap += ap
             total_ar += ar
-        
+
         # Trung bình trên batch
         mean_ap = total_ap / batch_size if batch_size > 0 else 0
         mean_ar = total_ar / batch_size if batch_size > 0 else 0
-        
+
         return mean_ap, mean_ar
     
     def calculate_ap_ar(self, true_boxes, true_classes, pred_boxes, pred_scores, pred_classes):
@@ -552,7 +502,6 @@ def evaluate(model, dataset, num_classes, grid_size=8, output_dir=None):
                     objectness = cell_pred[4]
                     
                     # Bỏ qua nếu objectness thấp
-                    if objectness < 0.01:  # Ngưỡng cao hơn để lọc nhiễu
                         continue
                     
                     # Lấy class
@@ -564,8 +513,6 @@ def evaluate(model, dataset, num_classes, grid_size=8, output_dir=None):
                     score = objectness * class_score
                     
                     # Bỏ qua nếu điểm số thấp
-                    if score < 0.01:  # Ngưỡng cao hơn để lọc nhiễu
-                        continue
                     
                     # Chuyển sang tọa độ hình ảnh
                     x_center = (col + x_cell) / grid_size
