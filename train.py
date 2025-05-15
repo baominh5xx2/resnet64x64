@@ -502,7 +502,6 @@ def evaluate(model, dataset, num_classes, grid_size=8, output_dir=None):
                     objectness = cell_pred[4]
                     
                     # Bỏ qua nếu objectness thấp
-                    if objectness < 0.0001:  # Ngưỡng cao hơn để lọc nhiễu
                         continue
                     
                     # Lấy class
@@ -514,8 +513,6 @@ def evaluate(model, dataset, num_classes, grid_size=8, output_dir=None):
                     score = objectness * class_score
                     
                     # Bỏ qua nếu điểm số thấp
-                    if score < 0.0001:  # Ngưỡng cao hơn để lọc nhiễu
-                        continue
                     
                     # Chuyển sang tọa độ hình ảnh
                     x_center = (col + x_cell) / grid_size
